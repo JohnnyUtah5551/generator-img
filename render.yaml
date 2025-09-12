@@ -1,8 +1,8 @@
 services:
-  - type: web
-    name: Image Generator Bot
-    runtime: docker
-    plan: free
-    envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
+ - type: web
+ name: Image Generator Bot
+ runtime: docker
+ plan: free
+ envVars:
+ - key: TELEGRAM_TOKEN
+ sync: false
