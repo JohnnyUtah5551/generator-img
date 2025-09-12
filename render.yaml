@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: Image Generator Bot
+    runtime: python-3.11.10
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
