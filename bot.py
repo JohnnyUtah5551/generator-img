@@ -30,7 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
  prompt = " ".join(context.args)
  if not prompt:
- await update.message.reply_text("UsageId: /generate киберпанк-город ночью")
+    await update.message.reply_text("UsageId: /generate ваш запрос")
  return
 
  await update.message.reply_text("🎨 Генерирую изображение... Это займёт 10–20 секунд.")
