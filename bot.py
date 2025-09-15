@@ -43,7 +43,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_url = output[0]
     await update.message.reply_photo(photo=image_url)
  except Exception as e:
- await update.message.reply_text(f"❌ Ошибка: {e}")
+    await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # Запуск бота
 if __name__ == "__main__":
