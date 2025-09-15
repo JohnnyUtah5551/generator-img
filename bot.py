@@ -36,11 +36,12 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
  await update.message.reply_text("🎨 Генерирую изображение... Это займёт 10–20 секунд.")
 
  try:
- output = replicate.run(
- "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c71116187a96637a03f7799ec3442e5fb9f",
- input={"prompt": prompt}
- )
- await update.message.reply_photo(photo=output0)
+    output = replicate.run(
+        "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c7eb9c56ee55542c5bbc9515e8200f26b91",
+        input={"prompt": prompt}
+    )
+    image_url = output[0]
+    await update.message.reply_photo(photo=image_url)
  except Exception as e:
  await update.message.reply_text(f"❌ Ошибка: {e}")
 
