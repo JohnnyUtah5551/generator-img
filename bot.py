@@ -1,57 +1,65 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    CallbackQueryHandler, 
+    ContextTypes
+)
 import replicate
 
-# Настройка логов
-logging.basicConfig(level=logging.INFO)
+# Ваш токен бота
+TOKEN = 'ВАШ_ТОКЕН'  # Замените на ваш реальный токен
 
-# Получаем токены
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+# Инициализация Replicate
+replicate.api_token = 'ВАШ_API_ТОКЕН_REPLICATE'
 
-if not TELEGRAM_TOKEN:
- print("❌ Ошибка: TELEGRAM_TOKEN не найден")
- exit(1)
-
-if not REPLICATE_API_TOKEN:
- print("❌ Ошибка: REPLICATE_API_TOKEN не найден")
- exit(1)
-
-# Устанавливаем токен Replicate
-replicate.Client(api_token=REPLICATE_API_TOKEN)
-
-# Команда /start
+# Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
- await update.message.reply_text("UsageId: /generate ваш запрос")
-
-# Команда /generate
-async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
- prompt = " ".join(context.args)
- if not prompt:
-    await update.message.reply_text("UsageId: /generate ваш запрос")
- return
-
- await update.message.reply_text("🎨 Генерирую изображение... Это займёт 10–20 секунд.")
-
- try:
-    output = replicate.run(
-        "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c7eb9c56ee55542c5bbc9515e8200f26b91",
-        input={"prompt": prompt}
+    keyboard = [
+        [InlineKeyboardButton("Создать изображение", callback_data='generate')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        'Привет! Я бот-генератор изображений. Выбери действие:',
+        reply_markup=reply_markup
     )
-    image_url = output[0]
-    await update.message.reply_photo(photo=image_url)
- except Exception as e:
-    await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# Запуск бота
-if __name__ == "__main__":
- app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+# Обработчик нажатий на кнопки
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
- app.add_handler(CommandHandler("start", start))
- app.add_handler(CommandHandler("generate", generate))
+    if query.data == 'generate':
+        # Здесь ваш код генерации изображения
+        await query.message.reply_text('Генерация изображения...')
+        # Добавьте ваш код взаимодействия с Replicate
+        # Пример:
+        # output = replicate.run(
+        #     'stable-diffusion',
+        #     input={
+        #         "prompt": "your prompt"
+        #     }
+        # )
+        # await query.message.reply_photo(photo=output)
 
- print("🚀 Бот запускается...")
- app.run_polling()
+async def main():
+    application = Application.builder().token(TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(button))
+    
+    # Настраиваем Webhook
+    await application.bot.set_webhook(url=f'https://your-render-url/{TOKEN}')
+    application.run_webhook(
+        listen='0.0.0.0',
+        port=int(os.environ.get('PORT', 5000)),
+        webhook_path=f'/{TOKEN}'
+    )
+
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(main())
+
 
