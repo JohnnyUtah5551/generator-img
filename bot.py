@@ -9,15 +9,15 @@ REPLICATE_API_KEY = os.getenv('REPLICATE_API_KEY')
 
 replicate.api_token = REPLICATE_API_KEY
 
-12 async def main():
-13     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-14     
-15     # Добавьте обработчики команд здесь
-16     application.add_handler(CommandHandler("start", start))
-17     application.add_handler(CommandHandler("generate", generate_image))
-18     
-19     # Запуск бота
-20     await application.run_polling()
+async def main():
+     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+     
+     # Добавьте обработчики команд здесь
+     application.add_handler(CommandHandler("start", start))
+     application.add_handler(CommandHandler("generate", generate_image))
+     
+     # Запуск бота
+     await application.run_polling()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Создать изображение", callback_data='generate')]
