@@ -22,9 +22,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Создать изображение", callback_data='generate')]
     ]
-    try:
-    # существующий код
+try:
+    # здесь должен быть ваш код с отступом в 4 пробела
+    # например:
+    await update.message.reply_text("Привет")
 except Exception as e:
+    # обработка ошибки тоже должна иметь отступ
+    print(f"Произошла ошибка: {e}")
     await update.message.reply_text(f"Произошла ошибка: {str(e)}")
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
