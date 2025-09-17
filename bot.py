@@ -9,15 +9,15 @@ REPLICATE_API_KEY = os.getenv('REPLICATE_API_KEY')
 
 replicate.api_token = REPLICATE_API_KEY
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Ваш код...
-
-async def main():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-if not TELEGRAM_BOT_TOKEN or not REPLICATE_API_KEY:
-    raise ValueError("Токены не найдены в переменных окружения!")
-    replicate.api_token = REPLICATE_API_KEY
-# Обработчик команды /start
+12 async def main():
+13     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+14     
+15     # Добавьте обработчики команд здесь
+16     application.add_handler(CommandHandler("start", start))
+17     application.add_handler(CommandHandler("generate", generate_image))
+18     
+19     # Запуск бота
+20     await application.run_polling()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Создать изображение", callback_data='generate')]
