@@ -22,6 +22,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Создать изображение", callback_data='generate')]
     ]
+    try:
+    # существующий код
+except Exception as e:
+    await update.message.reply_text(f"Произошла ошибка: {str(e)}")
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         'Привет! Я бот-генератор изображений. Выбери действие:',
