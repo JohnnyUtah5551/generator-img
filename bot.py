@@ -14,7 +14,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
+if not TELEGRAM_BOT_TOKEN or not REPLICATE_API_KEY:
+    raise ValueError("Токены не найдены в переменных окружения!")
+    replicate.api_token = REPLICATE_API_KEY
 # Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
