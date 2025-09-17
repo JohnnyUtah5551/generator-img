@@ -1,8 +1,14 @@
 services:
- - type: web
- name: Image Generator Bot
- runtime: docker
- plan: free
- envVars:
- - key: TELEGRAM_TOKEN
- sync: false
+  - type: web
+    name: image-generator-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: REPLICATE_API_KEY
+        sync: false
+      - key: RENDER_URL
+        value: "https://image-generator-bot.onrender.com"  # замени на свой Render URL
+      - key: WEBHOOK_PATH
+        value: "webhook"  # можно сменить на секретный путь
