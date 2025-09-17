@@ -5,10 +5,10 @@ services:
     plan: free
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false
+        sync: false   # задашь вручную в Render Dashboard
       - key: REPLICATE_API_KEY
-        sync: false
+        sync: false   # задашь вручную в Render Dashboard
       - key: RENDER_URL
-        value: "https://image-generator-bot.onrender.com"  # замени на свой Render URL
+        value: "https://image-generator-bot.onrender.com"
       - key: WEBHOOK_PATH
-        value: "webhook"  # можно поменять на секретный путь
+        value: "webhook"
