@@ -1,18 +1,19 @@
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    CallbackQueryHandler, 
-    ContextTypes
-)
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 import replicate
 
-# Ваш токен бота
-TOKEN = 'ВАШ_ТОКЕН'  # Замените на ваш реальный токен
+# Получаем токены из переменных окружения
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+REPLICATE_API_KEY = os.getenv('REPLICATE_API_KEY')
 
-# Инициализация Replicate
-replicate.api_token = 'ВАШ_API_ТОКЕН_REPLICATE'
+replicate.api_token = REPLICATE_API_KEY
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Ваш код...
+
+async def main():
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 # Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
