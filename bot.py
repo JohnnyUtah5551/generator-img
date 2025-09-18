@@ -159,7 +159,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         output = client.run(
-            "stability-ai/stable-diffusion:ac732df8",
+            "stability-ai/stable-diffusion:d70beb400d223e6432425a5299910329c6050c6abcf97b8c70537d6a1fcb269a",
             input={
                 "prompt": prompt,
                 "num_inference_steps": 30,
