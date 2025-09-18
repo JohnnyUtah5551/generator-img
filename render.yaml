@@ -3,6 +3,10 @@ services:
     name: image-generator-bot
     runtime: docker
     plan: free
+    autoDeploy: true        # включаем автодеплой
+    buildCommand: |
+      rm -rf /root/.cache/pip   # чистим pip-кэш
+      pip install --upgrade pip
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false   # задашь вручную в Render Dashboard
