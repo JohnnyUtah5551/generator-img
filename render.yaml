@@ -11,7 +11,5 @@ services:
         sync: false   # задашь вручную в Render Dashboard
       - key: REPLICATE_API_KEY
         sync: false   # задашь вручную в Render Dashboard
-      - key: RENDER_URL
-        value: "https://image-generator-bot.onrender.com"
-      - key: WEBHOOK_PATH
-        value: "webhook"
+      - key: ADMIN_ID
+        sync: false   # задашь вручную в Render Dashboard
