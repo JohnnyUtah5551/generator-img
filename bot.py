@@ -70,6 +70,78 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! У тебя 3 бесплатные генерации. Можешь купить больше через /buy",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+import os
+import logging
+import requests
+from datetime import datetime
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    PreCheckoutQueryHandler,
+    filters,
+)
+import replicate
+
+# === ЛОГИ ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# === Конфиг ===
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+PORT = int(os.environ.get("PORT", 5000))
+RENDER_URL = os.getenv("RENDER_URL")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")
+
+ADMIN_ID = 641377565  # твой ID
+FREE_GENERATIONS = 3
+
+client = replicate.Client(api_token=REPLICATE_API_KEY)
+
+# Хранилище генераций
+user_generations = {}
+user_purchases = {}
+daily_stats = {"purchases": 0, "generations": 0}
+
+
+# === Получение баланса Replicate ===
+def get_replicate_balance():
+    try:
+        url = "https://api.replicate.com/v1/account"
+        headers = {"Authorization": f"Token {REPLICATE_API_KEY}"}
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("credits", {}).get("usd_cents", 0) / 100
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка получения баланса Replicate: {e}")
+        return None
+
+
+# === Уведомление админа ===
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
+    balance = get_replicate_balance()
+    balance_text = f"\n💰 Баланс Replicate: {balance:.2f}$" if balance is not None else ""
+    await context.bot.send_message(chat_id=ADMIN_ID, text=message + balance_text)
+
+
+# === Команда /start ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("Создать изображение", callback_data="generate")]]
+    await update.message.reply_text(
+        "Привет! У тебя 3 бесплатные генерации. Можешь купить больше через /buy",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 # === Генерация изображения ===
@@ -156,8 +228,8 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title="Покупка генераций",
         description="Оплата через Telegram Stars",
         payload=f"buy_{amount}",
-        provider_token="",
-        currency="XTR",
+        provider_token="",  # Stars → всегда пусто
+        currency="XTR",  # фиксированная валюта для Stars
         prices=prices,
     )
 
@@ -233,6 +305,10 @@ def main():
         url_path=WEBHOOK_PATH,
         webhook_url=f"{RENDER_URL}/{WEBHOOK_PATH}",
     )
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
