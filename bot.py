@@ -1,237 +1,244 @@
 import logging
+import sqlite3
+import json
 import os
 import replicate
-import requests
-from deep_translator import GoogleTranslator
 from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InputMediaPhoto,
 )
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackContext, CallbackQueryHandler,
-    filters
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
 )
 
 # Логирование
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Токены и ключи
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-RENDER_URL = os.getenv("RENDER_URL", "https://generator-img-1.onrender.com")
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")
+# Репликейт токен
+os.environ["REPLICATE_API_TOKEN"] = "YOUR_REPLICATE_API_TOKEN"
+MODEL = "google/nano-banana"
+VERSION = "latest"
 
-# Клиент Replicate
-os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_KEY
+# SQLite
+conn = sqlite3.connect("bot.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    stars INTEGER DEFAULT 0
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS sessions (
+    user_id INTEGER PRIMARY KEY,
+    prompt TEXT,
+    initial_images TEXT,
+    last_image TEXT,
+    active INTEGER DEFAULT 0
+)
+""")
+conn.commit()
 
-# Временные хранилища
-user_balances = {}  # {user_id: количество генераций}
-user_freebies = {}  # {user_id: сколько бесплатных использовано}
-user_photos = {}    # {user_id: [список фото]}
-FREE_GENERATIONS = 3
+# --- DB helpers ---
+def get_user(user_id: int):
+    cursor.execute("SELECT stars FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO users (user_id, stars) VALUES (?, ?)", (user_id, 3))
+        conn.commit()
+        return 3
+    return row[0]
 
-# Inline меню
-main_menu = InlineKeyboardMarkup([
-    [InlineKeyboardButton("✨ Сгенерировать", callback_data="generate")],
-    [InlineKeyboardButton("🖼 Баланс", callback_data="balance")],
-    [InlineKeyboardButton("⭐ Купить генерации", callback_data="buy")]
-])
+def update_stars(user_id: int, delta: int):
+    stars = get_user(user_id)
+    stars = max(0, stars + delta)
+    cursor.execute("UPDATE users SET stars=? WHERE user_id=?", (stars, user_id))
+    conn.commit()
+    return stars
 
-back_menu = InlineKeyboardMarkup([
-    [InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu")]
-])
+def set_session(user_id: int, prompt: str, images: list):
+    cursor.execute("""
+        INSERT OR REPLACE INTO sessions (user_id, prompt, initial_images, last_image, active)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, prompt, json.dumps(images), None, 1))
+    conn.commit()
 
+def update_session_last_image(user_id: int, url: str):
+    cursor.execute("UPDATE sessions SET last_image=?, active=1 WHERE user_id=?", (url, user_id))
+    conn.commit()
 
-# ==========================
-# 📌 Обработчики
-# ==========================
-async def start(update: Update, context: CallbackContext):
+def get_session(user_id: int):
+    cursor.execute("SELECT prompt, initial_images, last_image, active FROM sessions WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "prompt": row[0],
+        "initial_images": json.loads(row[1]) if row[1] else [],
+        "last_image": row[2],
+        "active": row[3],
+    }
+
+def clear_session(user_id: int):
+    cursor.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    conn.commit()
+
+# --- UI helpers ---
+def main_menu():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("✨ Сгенерировать")],
+            [KeyboardButton("💰 Баланс"), KeyboardButton("🛒 Купить генерации")],
+        ],
+        resize_keyboard=True
+    )
+
+def result_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚡ Сгенерировать другой вариант", callback_data="variant"),
+            InlineKeyboardButton("✅ Закончить генерацию", callback_data="end"),
+        ]
+    ])
+
+# --- Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    get_user(update.effective_user.id)
     await update.message.reply_text(
-        "👋 Привет! Я бот для генерации и редактирования изображений "
-        "с помощью **Google Gemini 2.5 Flash — Nano Banana 🍌**.\n\n"
-        "⚡ Nano Banana — одна из самых мощных нейросетей на сегодняшний день.\n\n"
-        "✨ У тебя есть 3 бесплатные генерации.\n"
-        "Выбери действие ниже 👇",
-        reply_markup=main_menu,
+        "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
+        "**Nano Banana 🍌 — самой мощной нейросети для изображений на сегодня.**\n\n"
+        "✨ У тебя есть 3 бесплатные генерации.\n\n"
+        "📌 Возможности:\n"
+        "— Генерация изображений по тексту\n"
+        "— Редактирование и вариации загруженных фото\n"
+        "— Улучшение и корректировка результатов\n\n"
+        "🚀 Начни с кнопки ниже!",
+        reply_markup=main_menu(),
         parse_mode="Markdown"
     )
 
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stars = get_user(update.effective_user.id)
+    await update.message.reply_text(f"💰 У тебя {stars} генераций", reply_markup=main_menu())
 
-async def button_handler(update: Update, context: CallbackContext):
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    if text == "✨ Сгенерировать":
+        await update.message.reply_text("✍️ Отправь описание или фото для генерации", reply_markup=main_menu())
+        return
+    if text == "💰 Баланс":
+        await balance(update, context)
+        return
+    if text == "🛒 Купить генерации":
+        await update.message.reply_text("🛒 Покупка генераций через Telegram Stars скоро будет доступна!", reply_markup=main_menu())
+        return
+
+    session = get_session(user_id)
+    if session and session["active"] and session["last_image"]:
+        # Корректировка результата
+        await generate(update, context, prompt=text, input_image=session["last_image"])
+    else:
+        # Новая генерация (только текст)
+        set_session(user_id, text, [])
+        await generate(update, context, prompt=text)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    image_url = file.file_path
+    caption = update.message.caption
+
+    session = get_session(user_id)
+
+    if caption:
+        # Фото с подписью → сразу генерация
+        set_session(user_id, caption, [image_url])
+        await generate(update, context, prompt=caption, input_images=[image_url])
+    else:
+        # Фото без подписи → ждём промт
+        set_session(user_id, "", [image_url])
+        await update.message.reply_text("✍️ Напиши описание для генерации", reply_markup=main_menu())
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    session = get_session(user_id)
 
-    if query.data == "generate":
-        user_photos[user_id] = []
-        await query.edit_message_text(
-            "📸 Пришли описание или до 4 фото (в одном сообщении), чтобы я сгенерировал результат.",
-            reply_markup=back_menu
-        )
-    elif query.data == "balance":
-        balance = user_balances.get(user_id, 0)
-        freebies_used = user_freebies.get(user_id, 0)
-        free_left = max(0, FREE_GENERATIONS - freebies_used)
-        await query.edit_message_text(
-            f"💳 Твой баланс:\n"
-            f"— Бесплатные генерации: {free_left}\n"
-            f"— Купленные генерации: {balance}\n\n",
-            reply_markup=main_menu
-        )
-    elif query.data == "buy":
-        keyboard = [
-            [InlineKeyboardButton("✨ 10 генераций — 40⭐", callback_data="buy_10")],
-            [InlineKeyboardButton("💫 50 генераций — 200⭐", callback_data="buy_50")],
-            [InlineKeyboardButton("🚀 100 генераций — 400⭐", callback_data="buy_100")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
-        ]
-        await query.edit_message_text(
-            "Выбери пакет генераций:", reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    elif query.data == "menu":
-        await query.edit_message_text("Главное меню 👇", reply_markup=main_menu)
+    if not session:
+        await query.edit_message_caption(caption="⚠️ Нет активной генерации", reply_markup=None)
+        return
 
+    if query.data == "variant":
+        await generate(query, context, prompt=session["prompt"], input_images=session["initial_images"])
+    elif query.data == "end":
+        clear_session(user_id)
+        await query.edit_message_caption(caption="✅ Генерация завершена", reply_markup=None)
 
-# ==========================
-# 📌 Генерация
-# ==========================
-async def handle_text(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
-    text = update.message.text.strip()
-
-    if not await check_and_decrement_balance(update, user_id):
+# --- Generation ---
+async def generate(update, context, prompt: str, input_images: list = None, input_image: str = None):
+    user_id = update.effective_user.id
+    stars = get_user(user_id)
+    if stars < 4:
+        await context.bot.send_message(chat_id=user_id, text="❌ Недостаточно генераций. Пополни баланс.", reply_markup=main_menu())
         return
 
     try:
-        prompt = GoogleTranslator(source="auto", target="en").translate(text)
-    except Exception:
-        prompt = text
+        inputs = {"prompt": prompt}
+        if input_images:
+            inputs["input_images"] = input_images
+        if input_image:
+            inputs["input_image"] = input_image
 
-    await update.message.reply_text("✨ Генерирую изображение, подожди...")
-
-    try:
-        output = replicate.run(
-            "google/nano-banana:8b5d8483cbb4e72c772b9477d5193a004d19c7a95d24e30f7110e2c735023d4e",
-            input={"prompt": prompt}
-        )
-        if output:
-            await update.message.reply_photo(photo=output[0], reply_markup=back_menu)
+        output = replicate.run(f"{MODEL}:{VERSION}", input=inputs)
+        if isinstance(output, list):
+            result_url = output[0]
         else:
-            await update.message.reply_text(
-                "❌ Ошибка генерации. Попробуй позже.", reply_markup=back_menu
+            result_url = output
+
+        update_session_last_image(user_id, result_url)
+        update_stars(user_id, -4)
+
+        if isinstance(update, Update) and update.message:
+            await update.message.reply_photo(
+                photo=result_url,
+                caption="✨ Результат\n\nНапишите в чат, если нужно изменить что-то ещё",
+                reply_markup=result_keyboard()
+            )
+        else:
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=result_url,
+                caption="✨ Результат\n\nНапишите в чат, если нужно изменить что-то ещё",
+                reply_markup=result_keyboard()
             )
     except Exception as e:
-        logger.error(f"Ошибка генерации (текст): {e}")
-        await update.message.reply_text(
-            "❌ Ошибка генерации. Попробуй позже.", reply_markup=back_menu
-        )
+        logger.error(f"Ошибка генерации: {e}")
+        await context.bot.send_message(chat_id=user_id, text="❌ Ошибка генерации. Попробуй позже.")
 
-
-async def handle_photo(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
-    photos = update.message.photo
-
-    file = await context.bot.get_file(photos[-1].file_id)
-    url = file.file_path
-
-    user_photos.setdefault(user_id, []).append(url)
-
-    if len(user_photos[user_id]) >= 4:
-        await generate_with_photos(update, context, user_id)
-    else:
-        await update.message.reply_text(
-            f"📸 Фото загружено ({len(user_photos[user_id])}/4).\n"
-            f"Отправь ещё фото или текстовое описание для генерации.",
-            reply_markup=back_menu
-        )
-
-
-async def generate_with_photos(update: Update, context: CallbackContext, user_id: int):
-    if not await check_and_decrement_balance(update, user_id):
-        return
-
-    await update.message.reply_text("✨ Обрабатываю фото, подожди...")
-
-    try:
-        output = replicate.run(
-            "google/nano-banana:8b5d8483cbb4e72c772b9477d5193a004d19c7a95d24e30f7110e2c735023d4e",
-            input={"image": user_photos[user_id]}
-        )
-        if output:
-            media = [InputMediaPhoto(img) for img in output]
-            await update.message.reply_media_group(media)
-            await update.message.reply_text("✅ Готово!", reply_markup=back_menu)
-        else:
-            await update.message.reply_text(
-                "❌ Ошибка генерации. Попробуй позже.", reply_markup=back_menu
-            )
-    except Exception as e:
-        logger.error(f"Ошибка генерации (фото): {e}")
-        await update.message.reply_text(
-            "❌ Ошибка генерации. Попробуй позже.", reply_markup=back_menu
-        )
-    finally:
-        user_photos[user_id] = []
-
-
-# ==========================
-# 📌 Баланс и покупки
-# ==========================
-async def check_and_decrement_balance(update: Update, user_id: int) -> bool:
-    freebies_used = user_freebies.get(user_id, 0)
-    if freebies_used < FREE_GENERATIONS:
-        user_freebies[user_id] = freebies_used + 1
-        return True
-
-    balance = user_balances.get(user_id, 0)
-    if balance > 0:
-        user_balances[user_id] = balance - 1
-        return True
-
-    await update.message.reply_text(
-        "❌ У тебя закончились генерации.\n"
-        "Купи дополнительные в меню ⭐ Купить генерации.",
-        reply_markup=main_menu
-    )
-    return False
-
-
-async def successful_payment(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
-    payload = update.message.successful_payment.invoice_payload
-
-    if payload == "buy_10":
-        user_balances[user_id] = user_balances.get(user_id, 0) + 10
-    elif payload == "buy_50":
-        user_balances[user_id] = user_balances.get(user_id, 0) + 50
-    elif payload == "buy_100":
-        user_balances[user_id] = user_balances.get(user_id, 0) + 100
-
-    await update.message.reply_text("✅ Покупка успешно завершена!", reply_markup=main_menu)
-
-
-# ==========================
-# 📌 Запуск
-# ==========================
+# --- Main ---
 def main():
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token("YOUR_TELEGRAM_BOT_TOKEN").build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=5000,
-        url_path=TELEGRAM_BOT_TOKEN,
-        webhook_url=f"{RENDER_URL}/{TELEGRAM_BOT_TOKEN}"
-    )
-
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
