@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import asyncio
 import logging
 from telegram import (
     Update,
@@ -232,7 +231,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================
 # Main
 # ==========================
-async def main():
+def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -243,7 +242,7 @@ async def main():
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
 
-    await application.run_webhook(
+    application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_PATH,
@@ -251,4 +250,5 @@ async def main():
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.info("🚀 Бот запускается...")
+    main()
