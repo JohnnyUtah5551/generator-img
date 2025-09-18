@@ -63,14 +63,13 @@ async def main():
     application.add_handler(CallbackQueryHandler(button))
 
     webhook_url = f"{RENDER_URL}/{WEBHOOK_PATH}"
-    await application.bot.set_webhook(webhook_url)
-
     await application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=WEBHOOK_PATH,
-        webhook_url=webhook_url,
-    )
+    listen="0.0.0.0",
+    port=PORT,
+    url_path=WEBHOOK_PATH,
+    webhook_url=f"{RENDER_URL}/{WEBHOOK_PATH}",
+)
+
 
 
 if __name__ == "__main__":
