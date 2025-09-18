@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 PORT = int(os.environ.get("PORT", 5000))
-RENDER_URL = os.getenv("RENDER_URL")
+
+# Render автоматически подставляет RENDER_EXTERNAL_URL
+RENDER_URL = os.getenv("RENDER_URL") or os.getenv("RENDER_EXTERNAL_URL")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")
 PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")  # токен платежного провайдера Telegram
 
@@ -44,7 +46,7 @@ if not TELEGRAM_BOT_TOKEN:
 if not REPLICATE_API_KEY:
     raise ValueError("Не найден REPLICATE_API_KEY в переменных окружения")
 if not RENDER_URL:
-    raise ValueError("Не найден RENDER_URL в переменных окружения")
+    raise ValueError("Не найден RENDER_URL или RENDER_EXTERNAL_URL в переменных окружения")
 
 # ==========================
 # Клиент Replicate
