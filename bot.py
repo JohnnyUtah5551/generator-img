@@ -128,9 +128,9 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === Покупки ===
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("10 генераций - 10⭐", callback_data="buy_10")],
-        [InlineKeyboardButton("50 генераций - 50⭐", callback_data="buy_50")],
-        [InlineKeyboardButton("100 генераций - 100⭐", callback_data="buy_100")],
+        [InlineKeyboardButton("10 генераций - 20⭐", callback_data="buy_10")],
+        [InlineKeyboardButton("50 генераций - 100⭐", callback_data="buy_50")],
+        [InlineKeyboardButton("100 генераций - 200⭐", callback_data="buy_100")],
     ]
     await update.message.reply_text(
         "Выбери пакет генераций:", reply_markup=InlineKeyboardMarkup(keyboard)
@@ -142,13 +142,13 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "buy_10":
-        prices = [LabeledPrice("10 генераций", 1000)]  # 10⭐
+        prices = [LabeledPrice("10 генераций", 20)]
         amount = 10
     elif query.data == "buy_50":
-        prices = [LabeledPrice("50 генераций", 5000)]  # 50⭐
+        prices = [LabeledPrice("50 генераций", 100)]
         amount = 50
     else:
-        prices = [LabeledPrice("100 генераций", 10000)]  # 100⭐
+        prices = [LabeledPrice("100 генераций", 200)]
         amount = 100
 
     await context.bot.send_invoice(
@@ -156,7 +156,7 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title="Покупка генераций",
         description="Оплата через Telegram Stars",
         payload=f"buy_{amount}",
-        provider_token="",  # для Stars оставляем пустым
+        provider_token="",  # вставишь provider_token от Telegram Stars
         currency="XTR",
         prices=prices,
     )
