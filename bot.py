@@ -1,180 +1,165 @@
-import os
 import logging
+import os
 import replicate
+import requests
+from deep_translator import GoogleTranslator
 from telegram import (
-    Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    Update,
     LabeledPrice,
 )
 from telegram.ext import (
     Application,
     CommandHandler,
+    CallbackQueryHandler,
     MessageHandler,
     filters,
-    CallbackQueryHandler,
-    PreCheckoutQueryHandler,
     ContextTypes,
+    PreCheckoutQueryHandler,
 )
-from deep_translator import GoogleTranslator
 
-# === Логирование ===
+# === ЛОГИ ===
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# === Переменные окружения ===
+# === ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL = os.getenv("RENDER_URL", "https://generator-img-1.onrender.com")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")
-ADMIN_ID = os.getenv("ADMIN_ID")
 
-# === Клиент Replicate ===
-replicate_client = replicate.Client(api_token=REPLICATE_API_KEY)
+# === ПАМЯТЬ ПОЛЬЗОВАТЕЛЕЙ ===
+user_data = {}
 
-# === Данные пользователей ===
-users = {}  # user_id -> {"balance": int, "used": int}
-
-FREE_GENERATIONS = 3
-GEN_COST = 2  # 2⭐ за 1 генерацию
-
-PACKAGES = {
-    "10": 20,   # 10 генераций = 20⭐
-    "50": 100,  # 50 генераций = 100⭐
-    "100": 200, # 100 генераций = 200⭐
+# === ЦЕНЫ (в звёздах) ===
+PRICES = {
+    "10": 40,   # 10 генераций — 40⭐
+    "50": 200,  # 50 генераций — 200⭐
+    "100": 400, # 100 генераций — 400⭐
 }
 
-# === Старт ===
+# === КОМАНДА /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in users:
-        users[user_id] = {"balance": FREE_GENERATIONS, "used": 0}
+    if user_id not in user_data:
+        user_data[user_id] = {"free": 3, "paid": 0}
     await update.message.reply_text(
-        "👋 Привет! Я бот для генерации изображений с помощью нейросети **Nano Banana 🍌 (Google Gemini 2.5 Flash)**.\n\n"
-        f"У тебя {FREE_GENERATIONS} бесплатных генераций.\n"
-        "Напиши /generate и свой запрос или загрузи 1–4 фото с описанием."
+        "👋 Привет! Я бот для генерации изображений с помощью нейросети **Nano Banana 🍌**.\n\n"
+        "✨ У тебя есть 3 бесплатные генерации.\n"
+        "💫 Хочешь больше? Купи пакеты генераций через Telegram Stars!\n\n"
+        "📌 Доступные команды:\n"
+        "/balance — Проверить баланс\n"
+        "/generate — Сгенерировать изображение\n"
+        "/buy — Купить генерации"
     )
 
-# === Баланс ===
+# === КОМАНДА /balance ===
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user = users.get(user_id, {"balance": 0, "used": 0})
+    data = user_data.get(user_id, {"free": 0, "paid": 0})
     await update.message.reply_text(
-        f"💰 Остаток генераций: {user['balance']}\n"
-        f"📊 Использовано: {user['used']}"
+        f"📊 Баланс:\n"
+        f"Бесплатные: {data['free']}\n"
+        f"Платные: {data['paid']}"
     )
 
-# === Генерация текста + фото ===
-async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = users.get(user_id, {"balance": FREE_GENERATIONS, "used": 0})
-    prompt = " ".join(context.args)
-
-    if not prompt:
-        await update.message.reply_text("✍️ Напиши запрос после команды /generate")
-        return
-
-    if user["balance"] <= 0:
-        await update.message.reply_text("⚠️ У тебя закончились генерации. Купи ещё через /buy")
-        return
-
-    # Переводим запрос на английский
-    translated_prompt = GoogleTranslator(source="auto", target="en").translate(prompt)
-
-    await update.message.reply_text("⏳ Генерирую изображение...")
-
-    try:
-        output = replicate_client.run(
-            "google/nano-banana:latest",
-            input={"prompt": translated_prompt}
-        )
-        img_url = output[0]
-
-        await update.message.reply_photo(photo=img_url)
-        user["balance"] -= 1
-        user["used"] += 1
-    except Exception as e:
-        logger.error(f"Ошибка генерации: {e}")
-        await update.message.reply_text("❌ Ошибка генерации. Попробуй позже.")
-
-# === Обработка фото ===
-async def handle_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = users.get(user_id, {"balance": FREE_GENERATIONS, "used": 0})
-    photos = update.message.photo
-    caption = update.message.caption
-
-    if not caption:
-        await update.message.reply_text("✍️ Добавь описание для генерации вместе с фото.")
-        return
-
-    if user["balance"] <= 0:
-        await update.message.reply_text("⚠️ У тебя закончились генерации. Купи ещё через /buy")
-        return
-
-    # Переводим описание
-    translated_prompt = GoogleTranslator(source="auto", target="en").translate(caption)
-
-    # Берём до 4 фото
-    photo_files = []
-    for photo in photos[:4]:
-        file = await context.bot.get_file(photo.file_id)
-        photo_files.append(file.file_path)
-
-    await update.message.reply_text("⏳ Генерирую изображение...")
-
-    try:
-        output = replicate_client.run(
-            "google/nano-banana:latest",
-            input={"prompt": translated_prompt, "image": photo_files}
-        )
-        for img in output:
-            await update.message.reply_photo(photo=img)
-
-        user["balance"] -= 1
-        user["used"] += 1
-    except Exception as e:
-        logger.error(f"Ошибка генерации (фото): {e}")
-        await update.message.reply_text("❌ Ошибка генерации. Попробуй позже.")
-
-# === Покупка генераций ===
+# === КОМАНДА /buy ===
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("10 генераций — 20⭐", callback_data="buy_10")],
-        [InlineKeyboardButton("50 генераций — 100⭐", callback_data="buy_50")],
-        [InlineKeyboardButton("100 генераций — 200⭐", callback_data="buy_100")],
+        [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
+        [InlineKeyboardButton("50 генераций — 200⭐", callback_data="buy_50")],
+        [InlineKeyboardButton("100 генераций — 400⭐", callback_data="buy_100")],
     ]
-    await update.message.reply_text("🛒 Выбери пакет:", reply_markup=InlineKeyboardMarkup(keyboard))
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("💫 Выбери пакет генераций:", reply_markup=reply_markup)
 
+# === ОБРАБОТКА КНОПОК ПОКУПКИ ===
 async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    choice = query.data.split("_")[1]
-    stars = PACKAGES[choice]
-    await query.message.reply_invoice(
-        title=f"Пакет {choice} генераций",
-        description=f"Пополнение баланса на {choice} генераций.",
-        payload=f"buy_{choice}",
-        provider_token="",  # Telegram Stars → оставить пустым
-        currency="XTR",
-        prices=[LabeledPrice(label=f"{choice} генераций", amount=stars)],
-        start_parameter="test",
+
+    package = query.data.split("_")[1]
+    price = PRICES.get(package)
+    if not price:
+        await query.edit_message_text("❌ Ошибка. Попробуй снова.")
+        return
+
+    prices = [LabeledPrice(label=f"{package} генераций", amount=price * 100)]  # Stars → копейки
+    await context.bot.send_invoice(
+        chat_id=query.message.chat_id,
+        title=f"{package} генераций",
+        description=f"Покупка {package} генераций для Nano Banana 🍌",
+        payload=f"buy_{package}",
+        provider_token="",
+        currency="XTR",  # Telegram Stars
+        prices=prices,
+        start_parameter="test-payment",
     )
 
+# === CALLBACK ПОКУПКИ ===
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
     await query.answer(ok=True)
 
+# === ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ===
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
+    user_id = update.message.chat_id
     payload = update.message.successful_payment.invoice_payload
-    amount = int(payload.split("_")[1])
-    users[user_id]["balance"] += int(amount)
-    await update.message.reply_text(f"✅ Баланс пополнен на {amount} генераций!")
+    package = payload.split("_")[1]
 
-# === Main ===
+    if user_id not in user_data:
+        user_data[user_id] = {"free": 0, "paid": 0}
+
+    user_data[user_id]["paid"] += int(package)
+    await update.message.reply_text(f"✅ Успех! Баланс пополнен на {package} генераций.")
+
+# === КОМАНДА /generate ===
+async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    data = user_data.get(user_id, {"free": 0, "paid": 0})
+
+    if data["free"] <= 0 and data["paid"] <= 0:
+        await update.message.reply_text("❌ У тебя закончились генерации. Купи ещё с помощью /buy")
+        return
+
+    if not context.args:
+        await update.message.reply_text("✍️ Введи описание изображения. Пример:\n/generate кот в космосе")
+        return
+
+    prompt = " ".join(context.args)
+
+    try:
+        translated_prompt = GoogleTranslator(source="auto", target="en").translate(prompt)
+    except Exception:
+        translated_prompt = prompt
+
+    try:
+        client = replicate.Client(api_token=REPLICATE_API_KEY)
+        output = client.run(
+            "google/nano-banana",
+            input={"prompt": translated_prompt}
+        )
+
+        if not output:
+            raise Exception("Пустой ответ от модели")
+
+        image_url = output[0]
+        await update.message.reply_photo(photo=image_url, caption="✨ Готово!")
+
+        if data["free"] > 0:
+            data["free"] -= 1
+        else:
+            data["paid"] -= 1
+
+    except Exception as e:
+        logger.error(f"Ошибка генерации: {e}")
+        await update.message.reply_text("❌ Ошибка генерации. Попробуй позже.")
+
+# === MAIN ===
 def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -185,7 +170,6 @@ def main():
     application.add_handler(CallbackQueryHandler(buy_button, pattern="^buy_"))
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photos))
 
     application.run_webhook(
         listen="0.0.0.0",
