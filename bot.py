@@ -18,6 +18,7 @@ from telegram.ext import (
     filters,
 )
 import replicate
+from deep_translator import GoogleTranslator
 
 # === ЛОГИ ===
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +41,22 @@ user_generations = {}
 user_purchases = {}
 daily_stats = {"purchases": 0, "generations": 0}
 
+# === Фильтрация мата ===
+BAD_WORDS = ["хуй", "пизд", "еба", "сука", "бля", "fuck", "shit", "dick", "cunt"]
+
+def filter_prompt(prompt: str) -> str:
+    clean = prompt
+    for word in BAD_WORDS:
+        clean = clean.replace(word, "***")
+    return clean
+
+# === Перевод промпта ===
+def translate_prompt(prompt: str) -> str:
+    try:
+        return GoogleTranslator(source="auto", target="en").translate(prompt)
+    except Exception as e:
+        logger.error(f"Ошибка перевода: {e}")
+        return prompt
 
 # === Получение баланса Replicate ===
 def get_replicate_balance():
@@ -55,13 +72,11 @@ def get_replicate_balance():
         logger.error(f"Ошибка получения баланса Replicate: {e}")
         return None
 
-
 # === Уведомление админа ===
 async def notify_admin(context: ContextTypes.DEFAULT_TYPE, message: str):
     balance = get_replicate_balance()
     balance_text = f"\n💰 Баланс Replicate: {balance:.2f}$" if balance is not None else ""
     await context.bot.send_message(chat_id=ADMIN_ID, text=message + balance_text)
-
 
 # === Команда /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,7 +85,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! У тебя 3 бесплатные генерации. Можешь купить больше через /buy",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
-
 
 # === Генерация изображения ===
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,12 +98,15 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     prompt = " ".join(context.args) if context.args else "A futuristic city with flying cars"
+    prompt = filter_prompt(prompt)
+    translated_prompt = translate_prompt(prompt)
+
     await update.message.reply_text("⏳ Генерирую изображение...")
 
     try:
         output = client.run(
             "stability-ai/stable-diffusion:d70beb400d223e6432425a5299910329c6050c6abcf97b8c70537d6a1fcb269a",
-            input={"prompt": prompt},
+            input={"prompt": translated_prompt},
         )
 
         if isinstance(output, list):
@@ -107,6 +124,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context,
             f"👤 Пользователь @{username} (ID: {user_id})\n"
             f"📝 Промпт: {prompt}\n"
+            f"🌍 Перевод: {translated_prompt}\n"
             f"🎯 Осталось генераций: {user_generations[user_id]}",
         )
 
@@ -117,13 +135,11 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Ошибка у @{username} (ID: {user_id})\nПромпт: {prompt}\nОшибка: {e}",
         )
 
-
 # === Баланс ===
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     count = user_generations.get(user_id, FREE_GENERATIONS)
     await update.message.reply_text(f"📊 У тебя осталось {count} генераций.")
-
 
 # === Покупки ===
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,7 +151,6 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Выбери пакет генераций:", reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
 
 async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -161,11 +176,9 @@ async def buy_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices=prices,
     )
 
-
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
     await query.answer(ok=True)
-
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -186,7 +199,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Итого у него: {user_generations[user_id]}",
         )
 
-
 # === Статистика ===
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_purchases = sum(user_purchases.values())
@@ -194,7 +206,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📊 Статистика:\nПокупок: {total_purchases}\nГенераций осталось у всех: {total_generations}"
     )
-
 
 async def send_daily_stats(context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(
@@ -205,7 +216,6 @@ async def send_daily_stats(context: ContextTypes.DEFAULT_TYPE):
     )
     daily_stats["purchases"] = 0
     daily_stats["generations"] = 0
-
 
 # === MAIN ===
 def main():
@@ -233,7 +243,6 @@ def main():
         url_path=WEBHOOK_PATH,
         webhook_url=f"{RENDER_URL}/{WEBHOOK_PATH}",
     )
-
 
 if __name__ == "__main__":
     main()
