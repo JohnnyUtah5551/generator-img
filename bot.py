@@ -1,245 +1,272 @@
+import os
 import logging
 import sqlite3
-import json
-import os
 import replicate
 from telegram import (
     Update,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InputMediaPhoto,
+    InlineKeyboardButton,
+    InputFile,
 )
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    ContextTypes,
     filters,
+    ContextTypes,
 )
 
-# Логирование
-logging.basicConfig(level=logging.INFO)
+# -------------------
+# ЛОГИРОВАНИЕ
+# -------------------
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 logger = logging.getLogger(__name__)
 
-# Репликейт токен
-os.environ["REPLICATE_API_TOKEN"] = "YOUR_REPLICATE_API_TOKEN"
-MODEL = "google/nano-banana"
-VERSION = "latest"
+# -------------------
+# НАСТРОЙКИ
+# -------------------
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+MODEL_ID = "google/nano-banana"
+GENERATION_COST = 4  # Стоимость одной генерации в звёздах
+DB_PATH = "users.db"
 
-# SQLite
-conn = sqlite3.connect("bot.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    stars INTEGER DEFAULT 0
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS sessions (
-    user_id INTEGER PRIMARY KEY,
-    prompt TEXT,
-    initial_images TEXT,
-    last_image TEXT,
-    active INTEGER DEFAULT 0
-)
-""")
-conn.commit()
+# -------------------
+# ИНИЦИАЛИЗАЦИЯ БАЗЫ
+# -------------------
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            balance INTEGER DEFAULT 3,
+            last_image_url TEXT
+        )"""
+    )
+    conn.commit()
+    conn.close()
 
-# --- DB helpers ---
+
 def get_user(user_id: int):
-    cursor.execute("SELECT stars FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT balance, last_image_url FROM users WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
     if not row:
-        cursor.execute("INSERT INTO users (user_id, stars) VALUES (?, ?)", (user_id, 3))
+        cur.execute("INSERT INTO users (user_id, balance) VALUES (?, ?)", (user_id, 3))
         conn.commit()
-        return 3
-    return row[0]
+        row = (3, None)
+    conn.close()
+    return row
 
-def update_stars(user_id: int, delta: int):
-    stars = get_user(user_id)
-    stars = max(0, stars + delta)
-    cursor.execute("UPDATE users SET stars=? WHERE user_id=?", (stars, user_id))
+
+def update_balance(user_id: int, new_balance: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id))
     conn.commit()
-    return stars
+    conn.close()
 
-def set_session(user_id: int, prompt: str, images: list):
-    cursor.execute("""
-        INSERT OR REPLACE INTO sessions (user_id, prompt, initial_images, last_image, active)
-        VALUES (?, ?, ?, ?, ?)
-    """, (user_id, prompt, json.dumps(images), None, 1))
+
+def update_last_image(user_id: int, url: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET last_image_url = ? WHERE user_id = ?", (url, user_id))
     conn.commit()
+    conn.close()
 
-def update_session_last_image(user_id: int, url: str):
-    cursor.execute("UPDATE sessions SET last_image=?, active=1 WHERE user_id=?", (url, user_id))
-    conn.commit()
 
-def get_session(user_id: int):
-    cursor.execute("SELECT prompt, initial_images, last_image, active FROM sessions WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        return None
-    return {
-        "prompt": row[0],
-        "initial_images": json.loads(row[1]) if row[1] else [],
-        "last_image": row[2],
-        "active": row[3],
-    }
-
-def clear_session(user_id: int):
-    cursor.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
-    conn.commit()
-
-# --- UI helpers ---
+# -------------------
+# КНОПКИ
+# -------------------
 def main_menu():
-    return ReplyKeyboardMarkup(
+    return InlineKeyboardMarkup(
         [
-            [KeyboardButton("✨ Сгенерировать")],
-            [KeyboardButton("💰 Баланс"), KeyboardButton("🛒 Купить генерации")],
-        ],
-        resize_keyboard=True
-    )
-
-def result_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚡ Сгенерировать другой вариант", callback_data="variant"),
-            InlineKeyboardButton("✅ Закончить генерацию", callback_data="end"),
+            [InlineKeyboardButton("✨ Сгенерировать", callback_data="generate")],
+            [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
+            [InlineKeyboardButton("🛒 Купить", callback_data="buy")],
         ]
-    ])
-
-# --- Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    get_user(update.effective_user.id)
-    await update.message.reply_text(
-        "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
-        "**Nano Banana 🍌 — самой мощной нейросети для изображений на сегодня.**\n\n"
-        "✨ У тебя есть 3 бесплатные генерации.\n\n"
-        "📌 Возможности:\n"
-        "— Генерация изображений по тексту\n"
-        "— Редактирование и вариации загруженных фото\n"
-        "— Улучшение и корректировка результатов\n\n"
-        "🚀 Начни с кнопки ниже!",
-        reply_markup=main_menu(),
-        parse_mode="Markdown"
     )
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stars = get_user(update.effective_user.id)
-    await update.message.reply_text(f"💰 У тебя {stars} генераций", reply_markup=main_menu())
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
+def after_generation_menu():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔄 Сгенерировать другой вариант", callback_data="regenerate")],
+            [InlineKeyboardButton("✅ Закончить", callback_data="finish")],
+        ]
+    )
 
-    if text == "✨ Сгенерировать":
-        await update.message.reply_text("✍️ Отправь описание или фото для генерации", reply_markup=main_menu())
-        return
-    if text == "💰 Баланс":
-        await balance(update, context)
-        return
-    if text == "🛒 Купить генерации":
-        await update.message.reply_text("🛒 Покупка генераций через Telegram Stars скоро будет доступна!", reply_markup=main_menu())
-        return
 
-    session = get_session(user_id)
-    if session and session["active"] and session["last_image"]:
-        # Корректировка результата
-        await generate(update, context, prompt=text, input_image=session["last_image"])
-    else:
-        # Новая генерация (только текст)
-        set_session(user_id, text, [])
-        await generate(update, context, prompt=text)
+# -------------------
+# ОБРАБОТЧИКИ
+# -------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    init_db()
+    user = update.effective_user
+    balance, _ = get_user(user.id)
+    await update.message.reply_text(
+        f"👋 Привет, {user.first_name}!\n\n"
+        "Я бот для генерации и редактирования изображений с помощью самой мощной нейросети "
+        "**Google Nano Banana 🍌**.\n\n"
+        f"✨ У тебя {balance} бесплатных генераций.\n"
+        "💫 При необходимости можно докупить ещё через Telegram Stars.",
+        reply_markup=main_menu(),
+    )
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    image_url = file.file_path
-    caption = update.message.caption
-
-    session = get_session(user_id)
-
-    if caption:
-        # Фото с подписью → сразу генерация
-        set_session(user_id, caption, [image_url])
-        await generate(update, context, prompt=caption, input_images=[image_url])
-    else:
-        # Фото без подписи → ждём промт
-        set_session(user_id, "", [image_url])
-        await update.message.reply_text("✍️ Напиши описание для генерации", reply_markup=main_menu())
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    session = get_session(user_id)
 
-    if not session:
-        await query.edit_message_caption(caption="⚠️ Нет активной генерации", reply_markup=None)
-        return
+    if query.data == "balance":
+        balance, _ = get_user(query.from_user.id)
+        await query.message.reply_text(f"💰 У тебя {balance} генераций", reply_markup=main_menu())
 
-    if query.data == "variant":
-        await generate(query, context, prompt=session["prompt"], input_images=session["initial_images"])
-    elif query.data == "end":
-        clear_session(user_id)
-        await query.edit_message_caption(caption="✅ Генерация завершена", reply_markup=None)
+    elif query.data == "buy":
+        await query.message.reply_text(
+            "🛒 Покупка генераций через Telegram Stars пока в разработке.",
+            reply_markup=main_menu(),
+        )
 
-# --- Generation ---
-async def generate(update, context, prompt: str, input_images: list = None, input_image: str = None):
+    elif query.data == "generate":
+        await query.message.reply_text("✍️ Напиши описание для генерации или пришли фото с подписью.")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = update.message.text
     user_id = update.effective_user.id
-    stars = get_user(user_id)
-    if stars < 4:
-        await context.bot.send_message(chat_id=user_id, text="❌ Недостаточно генераций. Пополни баланс.", reply_markup=main_menu())
+    balance, last_image = get_user(user_id)
+
+    if balance < GENERATION_COST:
+        await update.message.reply_text("❌ Недостаточно генераций. Пополни баланс.", reply_markup=main_menu())
         return
+
+    await update.message.reply_text("🎨 Генерация изображения...")
 
     try:
-        inputs = {"prompt": prompt}
-        if input_images:
-            inputs["input_images"] = input_images
-        if input_image:
-            inputs["input_image"] = input_image
+        output = replicate.run(
+            f"{MODEL_ID}:latest",
+            input={"prompt": prompt, "num_outputs": 1},
+        )
+        image_url = output[0]
+        update_last_image(user_id, image_url)
+        update_balance(user_id, balance - GENERATION_COST)
 
-        output = replicate.run(f"{MODEL}:{VERSION}", input=inputs)
-        if isinstance(output, list):
-            result_url = output[0]
-        else:
-            result_url = output
-
-        update_session_last_image(user_id, result_url)
-        update_stars(user_id, -4)
-
-        if isinstance(update, Update) and update.message:
-            await update.message.reply_photo(
-                photo=result_url,
-                caption="✨ Результат\n\nНапишите в чат, если нужно изменить что-то ещё",
-                reply_markup=result_keyboard()
-            )
-        else:
-            await context.bot.send_photo(
-                chat_id=user_id,
-                photo=result_url,
-                caption="✨ Результат\n\nНапишите в чат, если нужно изменить что-то ещё",
-                reply_markup=result_keyboard()
-            )
+        await update.message.reply_photo(
+            image_url,
+            caption="✅ Готово!\nНапишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=after_generation_menu(),
+        )
     except Exception as e:
         logger.error(f"Ошибка генерации: {e}")
-        await context.bot.send_message(chat_id=user_id, text="❌ Ошибка генерации. Попробуй позже.")
+        await update.message.reply_text("❌ Ошибка генерации. Попробуй позже.", reply_markup=main_menu())
 
-# --- Main ---
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance, _ = get_user(user_id)
+
+    if balance < GENERATION_COST:
+        await update.message.reply_text("❌ Недостаточно генераций. Пополни баланс.", reply_markup=main_menu())
+        return
+
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+    file_path = f"/tmp/{user_id}.jpg"
+    await file.download_to_drive(file_path)
+
+    prompt = update.message.caption
+    if not prompt:
+        await update.message.reply_text("📸 Фото получено! Напиши описание для генерации.")
+        context.user_data["pending_photo"] = file_path
+        return
+
+    await update.message.reply_text("🎨 Генерация изображения...")
+
+    try:
+        with open(file_path, "rb") as f:
+            output = replicate.run(
+                f"{MODEL_ID}:latest",
+                input={"prompt": prompt, "image": f, "num_outputs": 1},
+            )
+        image_url = output[0]
+        update_last_image(user_id, image_url)
+        update_balance(user_id, balance - GENERATION_COST)
+
+        await update.message.reply_photo(
+            image_url,
+            caption="✅ Готово!\nНапишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=after_generation_menu(),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка генерации (фото): {e}")
+        await update.message.reply_text("❌ Ошибка генерации. Попробуй позже.", reply_markup=main_menu())
+
+
+async def regenerate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance, last_image = get_user(user_id)
+
+    if not last_image:
+        await update.callback_query.message.reply_text("❌ Нет последнего изображения для повторной генерации.", reply_markup=main_menu())
+        return
+
+    if balance < GENERATION_COST:
+        await update.callback_query.message.reply_text("❌ Недостаточно генераций. Пополни баланс.", reply_markup=main_menu())
+        return
+
+    await update.callback_query.message.reply_text("🔄 Генерация нового варианта...")
+
+    try:
+        output = replicate.run(
+            f"{MODEL_ID}:latest",
+            input={"image": last_image, "num_outputs": 1},
+        )
+        image_url = output[0]
+        update_last_image(user_id, image_url)
+        update_balance(user_id, balance - GENERATION_COST)
+
+        await update.callback_query.message.reply_photo(
+            image_url,
+            caption="✅ Новый вариант готов!\nНапишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=after_generation_menu(),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка регенерации: {e}")
+        await update.callback_query.message.reply_text("❌ Ошибка при генерации нового варианта.", reply_markup=main_menu())
+
+
+async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.message.reply_text("✨ Генерация завершена.", reply_markup=main_menu())
+
+
+# -------------------
+# MAIN
+# -------------------
 def main():
-    app = Application.builder().token("YOUR_TELEGRAM_BOT_TOKEN").build()
+    init_db()
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN is not set")
+
+    app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(balance|buy|generate)$"))
+    app.add_handler(CallbackQueryHandler(regenerate, pattern="^regenerate$"))
+    app.add_handler(CallbackQueryHandler(finish, pattern="^finish$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(CallbackQueryHandler(button_handler))
 
     app.run_polling()
 
+
 if __name__ == "__main__":
     main()
+
 
