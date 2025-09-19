@@ -5,7 +5,6 @@ import replicate
 
 from telegram import (
     Update,
-    ReplyKeyboardMarkup,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -33,6 +32,10 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+ADMIN_ID = os.getenv("ADMIN_ID")
+RENDER_URL = os.getenv("RENDER_URL")
+
+replicate.Client(api_token=REPLICATE_API_KEY)
 
 DB_PATH = "bot.db"
 
@@ -94,122 +97,115 @@ def get_last_image(user_id: int) -> str | None:
 
 
 # -----------------------------
+# МЕНЮ
+# -----------------------------
+def main_menu():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
+            [InlineKeyboardButton("📊 Баланс", callback_data="balance")],
+            [InlineKeyboardButton("💰 Купить генерации", callback_data="buy")],
+            [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
+        ]
+    )
+
+
+# -----------------------------
 # ХЭНДЛЕРЫ
 # -----------------------------
-MAIN_MENU = [["🎨 Сгенерировать"], ["💳 Баланс", "ℹ️ Помощь"], ["💰 Купить генерации"]]
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     balance = get_balance(user_id)
 
     text = (
-        "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
-        "**Nano Banana (Google Gemini 2.5 Flash)**.\n\n"
-        f"✨ У тебя {balance} бесплатных генераций.\n\n"
-        "⚡ Для вас работает Google Gemini (Nano Banana).\n\n"
-        "📌 Используй кнопки меню снизу."
+        "👋 Привет! Я бот для генерации и редактирования изображений с помощью нейросети "
+        "Nano Banana (Google Gemini 2.5 Flash) — одной из самых мощных моделей для генерации изображений.\n\n"
+        "Готовы начать?\n"
+        f"✨ У тебя {balance} бесплатных генерации.\n\n"
+        "Отправьте от 1 до 4 изображений с подписью, что нужно изменить, "
+        "или просто напишите текст, чтобы создать новое изображение."
     )
 
     await update.message.reply_text(
         text,
         parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True),
+        reply_markup=main_menu(),
     )
 
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    balance = get_balance(user_id)
-    await update.message.reply_text(
-        f"💳 У вас осталось {balance} генераций.\n\n"
-        "Хотите больше? Нажмите «💰 Купить генерации»."
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "ℹ️ Я помогу с генерацией и редактированием изображений.\n\n"
-        "1️⃣ Отправьте текстовый запрос или до 4 изображений.\n"
-        "2️⃣ Получите результат.\n"
-        "3️⃣ Напишите новый текст, чтобы изменить результат.\n\n"
-        "Под сгенерированным изображением будут кнопки:\n"
-        "— «Сгенерировать другой вариант»\n"
-        "— «Закончить генерацию»\n\n"
-        "Для покупки генераций используйте «💰 Купить генерации».",
-        parse_mode="Markdown",
-    )
-
-
-# -----------------------------
-# ПОКУПКА ЗВЁЗДАМИ
-# -----------------------------
-PACKAGES = {
-    "pack10": {"label": "10 генераций", "amount": 40000, "generations": 10},   # 40⭐
-    "pack50": {"label": "50 генераций", "amount": 200000, "generations": 50},  # 200⭐
-    "pack100": {"label": "100 генераций", "amount": 400000, "generations": 100},  # 400⭐
-}
-
-
-async def buy_generations(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✨ 10 генераций — 40⭐", callback_data="buy_pack10")],
-            [InlineKeyboardButton("⚡ 50 генераций — 200⭐", callback_data="buy_pack50")],
-            [InlineKeyboardButton("🚀 100 генераций — 400⭐", callback_data="buy_pack100")],
-        ]
-    )
-    await update.message.reply_text("Выберите пакет генераций:", reply_markup=keyboard)
-
-
-async def buy_package_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user_id = query.from_user.id
     await query.answer()
-    pack_id = query.data.replace("buy_", "")
 
-    if pack_id not in PACKAGES:
-        await query.edit_message_text("⚠️ Пакет не найден.")
-        return
+    if query.data == "balance":
+        balance = get_balance(user_id)
+        await query.message.reply_text(f"📊 У вас {balance} генераций.", reply_markup=main_menu())
 
-    package = PACKAGES[pack_id]
+    elif query.data == "help":
+        await query.message.reply_text(
+            "ℹ️ Я помогу с генерацией изображений:\n\n"
+            "1️⃣ Отправьте текстовый запрос или фото (до 4 штук с подписью).\n"
+            "2️⃣ Получите результат.\n"
+            "3️⃣ Используйте меню для управления.",
+            reply_markup=main_menu(),
+        )
 
-    prices = [LabeledPrice(label=package["label"], amount=package["amount"])]
+    elif query.data == "generate":
+        await query.message.reply_text("✏️ Напишите описание картинки или загрузите фото.", reply_markup=main_menu())
 
-    await context.bot.send_invoice(
-        chat_id=query.message.chat_id,
-        title="Покупка генераций",
-        description=f"{package['label']} для бота",
-        payload=pack_id,
-        provider_token="",  # для Stars оставляем пустым
-        currency="XTR",
-        prices=prices,
-    )
+    elif query.data == "buy":
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
+                [InlineKeyboardButton("50 генераций — 200⭐", callback_data="buy_50")],
+                [InlineKeyboardButton("100 генераций — 400⭐", callback_data="buy_100")],
+            ]
+        )
+        await query.message.reply_text("💰 Выберите пакет:", reply_markup=keyboard)
+
+    elif query.data.startswith("buy_"):
+        packages = {"buy_10": (10, 40), "buy_50": (50, 200), "buy_100": (100, 400)}
+        count, price = packages[query.data]
+        title = f"{count} генераций"
+        description = f"Пакет из {count} генераций для бота."
+        payload = f"purchase_{count}"
+        currency = "XTR"
+        prices = [LabeledPrice(label=title, amount=price)]
+        await context.bot.sendInvoice(
+            chat_id=user_id,
+            title=title,
+            description=description,
+            payload=payload,
+            provider_token="",  # пусто для Telegram Stars
+            currency=currency,
+            prices=prices,
+        )
 
 
-async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# -----------------------------
+# ОПЛАТА
+# -----------------------------
+async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
     await query.answer(ok=True)
 
 
-async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     payload = update.message.successful_payment.invoice_payload
+    if payload == "purchase_10":
+        update_balance(user_id, 10)
+    elif payload == "purchase_50":
+        update_balance(user_id, 50)
+    elif payload == "purchase_100":
+        update_balance(user_id, 100)
 
-    if payload in PACKAGES:
-        gens = PACKAGES[payload]["generations"]
-        update_balance(user_id, gens)
-        await update.message.reply_text(
-            f"✅ Оплата прошла успешно!\n"
-            f"💳 Вам начислено {gens} генераций.\n"
-            f"Теперь у вас {get_balance(user_id)} генераций.",
-            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True),
-        )
-    else:
-        await update.message.reply_text("⚠️ Оплата прошла, но пакет не найден.")
+    await update.message.reply_text("✅ Покупка успешна! Баланс пополнен.", reply_markup=main_menu())
 
 
 # -----------------------------
-# ГЕНЕРАЦИЯ (укорочено, как у тебя было)
+# ГЕНЕРАЦИЯ
 # -----------------------------
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -227,22 +223,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "google/nano-banana",
             input={"prompt": prompt},
         )
-
         image_url = output[0]
         save_last_image(user_id, image_url)
         update_balance(user_id, -1)
 
-        keyboard = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("🔄 Сгенерировать другой вариант", callback_data="regen")],
-                [InlineKeyboardButton("✅ Закончить генерацию", callback_data="end")],
-            ]
+        await update.message.reply_photo(
+            image_url,
+            caption="✏️ Напишите текст, если нужно изменить изображение",
+            reply_markup=main_menu(),
         )
+    finally:
+        await wait_msg.delete()
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    if balance <= 0:
+        await update.message.reply_text("❌ У вас закончились генерации.")
+        return
+
+    photos = update.message.photo
+    if not photos:
+        return
+
+    caption = update.message.caption or "Измени это изображение"
+    wait_msg = await update.message.reply_text("⏳ Подождите, идёт генерация...")
+
+    try:
+        output = replicate.run(
+            "google/nano-banana",
+            input={"prompt": caption, "image": photos[-1].get_file().file_path},
+        )
+        image_url = output[0]
+        save_last_image(user_id, image_url)
+        update_balance(user_id, -1)
 
         await update.message.reply_photo(
             image_url,
-            caption="✏️ Напишите в чат, если нужно изменить что-то ещё",
-            reply_markup=keyboard,
+            caption="✏️ Напишите текст, если нужно изменить изображение",
+            reply_markup=main_menu(),
         )
     finally:
         await wait_msg.delete()
@@ -256,16 +276,10 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("help", help_command))
-
-    # Покупки
-    app.add_handler(MessageHandler(filters.Regex("Купить генерации"), buy_generations))
-    app.add_handler(CallbackQueryHandler(buy_package_callback, pattern="^buy_"))
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-
-    # Генерация
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("🚀 Бот запускается...")
@@ -273,7 +287,7 @@ def main():
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8080)),
         url_path=TELEGRAM_BOT_TOKEN,
-        webhook_url=f"{os.environ.get('RENDER_EXTERNAL_URL')}/{TELEGRAM_BOT_TOKEN}",
+        webhook_url=f"{RENDER_URL}/{TELEGRAM_BOT_TOKEN}",
     )
 
 
