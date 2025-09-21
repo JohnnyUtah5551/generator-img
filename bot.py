@@ -1,4 +1,3 @@
-# bot.py — версия 1.5 (минимальные добавки: SQLite, лог генераций, уведомления админу, daily report)
 import os
 import logging
 from uuid import uuid4
@@ -18,7 +17,7 @@ from telegram.ext import (
 )
 import replicate
 
-# === ДОБАВЛЕНИЯ: импорт для SQLite / async wrappers / timezone ===
+# === ДОБАВЛЕНИЯ: sqlite, asyncio, время ===
 import sqlite3
 import asyncio
 from datetime import datetime, timedelta, time, timezone
@@ -40,17 +39,15 @@ REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
 # Replicate клиент
 replicate_client = replicate.Client(api_token=REPLICATE_API_KEY)
 
-# Балансы пользователей (в памяти, как было)
+# Балансы пользователей (пока оставляем in-memory для совместимости)
 user_balances = {}
 FREE_GENERATIONS = 3
 
 # -------------------------
-# === ДОБАВЛЕНИЯ: SQLite persistence ===
+# === ДОБАВЛЕНИЯ: SQLite persistence (минимальные) ===
 # -------------------------
-# DB path (можно переопределить через env DB_PATH)
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 
-# Строка создания таблиц (минимальная — users + generations)
 _INIT_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -81,21 +78,14 @@ def _init_db_sync(db_path: str = DB_PATH):
     finally:
         conn.close()
 
-async def init_db():
-    # Вызывать до старта приложения (в main)
-    await asyncio.to_thread(_init_db_sync, DB_PATH)
-
-# sync helpers
 def _ensure_user_sync(user_id: int, username: Optional[str], initial_balance: int = 0):
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.cursor()
-        # insert if not exists
         cur.execute(
             "INSERT OR IGNORE INTO users (user_id, username, balance, last_active) VALUES (?, ?, ?, ?)",
             (user_id, username, initial_balance, datetime.utcnow().isoformat()),
         )
-        # If record existed but balance is NULL, ensure it's 0 (defensive)
         cur.execute("UPDATE users SET last_active = ? WHERE user_id = ?", (datetime.utcnow().isoformat(), user_id))
         conn.commit()
     finally:
@@ -156,7 +146,6 @@ async def log_generation(user_id: int, prompt: str, typ: str, result_url: str):
 async def daily_stats_between(start_iso: str, end_iso: str):
     return await asyncio.to_thread(_daily_stats_between_sync, start_iso, end_iso)
 
-# admin notify helper
 async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int, username: Optional[str], prompt: str, result: str, typ: str):
     if not ADMIN_ID:
         return
@@ -171,11 +160,9 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int, usernam
             await context.bot.send_message(chat_id=ADMIN_ID, text=header + f"Результат:\n{preview}")
     except Exception:
         logger.exception("Не удалось отправить админу уведомление")
-# -------------------------
-# === /ДОБАВЛЕНИЯ: SQLite persistence ===
-# -------------------------
 
-# Главное меню
+# -------------------------
+# Главное меню (как было)
 def main_menu():
     keyboard = [
         [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
@@ -185,7 +172,7 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# Генерация изображения через Replicate
+# Генерация изображения через Replicate (как было)
 async def generate_image(prompt: str, images: list[str] = None):
     try:
         input_data = {"prompt": prompt}
@@ -202,18 +189,18 @@ async def generate_image(prompt: str, images: list[str] = None):
         logger.error(f"Ошибка генерации: {e}")
         return None
 
-# Старт
+# Старт (без изменения текста; только добавление обеспечения записи в SQLite)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_balances:
         user_balances[user_id] = FREE_GENERATIONS
 
     # === ДОБАВЛЕНИЕ: создать запись пользователя в БД (без смены поведения) ===
-    # Если пользователя нет в DB, создаём запись с балансом из user_balances (чтобы не менять тексты/логику)
     try:
+        # записываем initial balance = текущее in-memory значение, чтобы не менять поведение
         await ensure_user(user_id, update.effective_user.username or "", user_balances.get(user_id, FREE_GENERATIONS))
     except Exception:
-        logger.exception("Не удалось записать пользователя в SQLite (это не ломает работу)")
+        logger.exception("Не удалось записать пользователя в SQLite (продолжаем без ошибки)")
     # === /ДОБАВЛЕНИЕ ===
 
     text = (
@@ -226,7 +213,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, reply_markup=main_menu())
 
-# Обработчик меню
+# Обработчик меню (как было)
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -262,7 +249,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.message.reply_text(help_text, reply_markup=main_menu())
 
-# Покупки
+# Покупки (как было)
 async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -287,7 +274,7 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             start_parameter="stars-payment",
         )
 
-# Обработка успешной оплаты
+# Обработка успешной оплаты (как было, добавляем запись в SQLite)
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment = update.message.successful_payment
     user_id = update.effective_user.id
@@ -314,7 +301,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
             reply_markup=main_menu()
         )
 
-# Сообщения с текстом / фото
+# Сообщения с текстом / фото (как было, добавляем списание в SQLite, лог и уведомление админу)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     balance = user_balances.get(user_id, FREE_GENERATIONS)
@@ -348,18 +335,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # === ДОБАВЛЕНИЯ: записать списание и лог генерации в SQLite, уведомить админа ===
         try:
-            # reflect deduction in DB
             await adjust_balance(user_id, -1)
         except Exception:
             logger.exception("Ошибка при списании в SQLite (не ломаем основной поток)")
 
         try:
-            # log generation
             await log_generation(user_id, prompt, "image", result)
         except Exception:
             logger.exception("Ошибка при логировании генерации в SQLite")
 
-        # notify admin with prompt + result (image or text)
         try:
             await notify_admin(context, user_id, update.effective_user.username or "", prompt, result, "image")
         except Exception:
@@ -379,26 +363,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
-# Завершение сессии
+# Завершение сессии (как было)
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("Главное меню:", reply_markup=main_menu())
 
-# Запуск приложения
+# Запуск приложения (fixed for PTB 20.6: use asyncio.run with async run_webhook)
 def main():
-    # === ДОБАВЛЕНИЕ: инициализация SQLite (не меняет поведение) ===
-    # Вызов асинхронно перед стартом приложения
+    # === ДОБАВЛЕНИЕ: инициализация SQLite (синхронно, перед созданием app) ===
     try:
-        # инициализация синхронного SQL в фоновом потоке
-        asyncio.run(_init_db_sync(DB_PATH))
+        _init_db_sync(DB_PATH)
     except Exception:
-        # если запуск через asyncio.run плохой в окружении — попробовать sync
-        try:
-            _init_db_sync(DB_PATH)
-        except Exception:
-            logger.exception("Не удалось инициализировать SQLite (не ломаем запуск)")
-    # === /ДОБАВЛЕНИЕ ===
+        logger.exception("Не удалось инициализировать SQLite, продолжаем запуск (DB operations будут пытаться работать)")
 
     app = Application.builder().token(TOKEN).build()
 
@@ -409,18 +386,9 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
-    # === ДОБАВЛЕНИЕ: daily report job в 09:00 UTC (==12:00 МСК) ===
+    # === ДОБАВЛЕНИЕ: daily report job в 09:00 UTC == 12:00 MSK ===
     try:
-        # job_queue доступен после создания app
-        def _schedule_report():
-            # run_daily expects time with tzinfo=UTC; create it
-            daily_time_utc = time(hour=9, minute=0, tzinfo=timezone.utc)
-            app.job_queue.run_daily(_daily_report_job_wrapper, time=daily_time_utc)
-        # we add job using app.job_queue directly
-        # define wrapper so it has correct signature when called by JobQueue
         async def _daily_report_job_wrapper(context: ContextTypes.DEFAULT_TYPE):
-            # compute Moscow day range in UTC and call daily_stats_between + send to admin
-            # This uses the same logic as other helpers
             now_utc = datetime.now(timezone.utc)
             moscow_now = now_utc.astimezone(timezone(timedelta(hours=3)))
             moscow_date = moscow_now.date()
@@ -454,7 +422,7 @@ def main():
             except Exception:
                 logger.exception("Не удалось отправить ежедневный отчёт админу")
 
-        # schedule job
+        # schedule at 09:00 UTC
         daily_time_utc = time(hour=9, minute=0, tzinfo=timezone.utc)
         app.job_queue.run_daily(_daily_report_job_wrapper, time=daily_time_utc)
     except Exception:
@@ -462,12 +430,17 @@ def main():
 
     # Webhook для Render
     port = int(os.environ.get("PORT", 5000))
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TOKEN,
-        webhook_url=f"{RENDER_URL}/{TOKEN}"
-    )
+
+    async def run():
+        await app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=TOKEN,
+            webhook_url=f"{RENDER_URL}/{TOKEN}"
+        )
+
+    # запускаем event loop правильно
+    asyncio.run(run())
 
 if __name__ == "__main__":
     main()
