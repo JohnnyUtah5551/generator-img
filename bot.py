@@ -1,233 +1,234 @@
+# bot.py — версия 1.5
 import os
 import logging
-from uuid import uuid4
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-    LabeledPrice,
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-import replicate
+import asyncio
+import sqlite3
+import json
+from datetime import datetime, timedelta, timezone
 
-# Логирование
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
+
+# --------------------------
+# Конфигурация
+# --------------------------
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+RENDER_URL = os.environ.get("RENDER_URL")
+
+DB_PATH = "bot.db"
+DAILY_REPORT_HOUR = 12  # 12:00 по Москве (UTC+3)
+
+COST_PER_IMAGE = 1
+COST_PER_TEXT = 0
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Переменные окружения
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-RENDER_URL = os.getenv("RENDER_URL")
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+dp = Dispatcher(bot)
 
-# Replicate клиент
-replicate_client = replicate.Client(api_token=REPLICATE_API_KEY)
+# --------------------------
+# SQLite база
+# --------------------------
+INIT_SQL = """
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    balance INTEGER DEFAULT 0,
+    total_generations INTEGER DEFAULT 0,
+    last_active TEXT
+);
 
-# Балансы пользователей
-user_balances = {}
-FREE_GENERATIONS = 3
+CREATE TABLE IF NOT EXISTS generations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    prompt TEXT,
+    type TEXT,
+    result_url TEXT,
+    created_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+"""
 
-# Главное меню
-def main_menu():
-    keyboard = [
-        [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
-        [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
-        [InlineKeyboardButton("⭐ Купить генерации", callback_data="buy")],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(INIT_SQL)
+    conn.commit()
+    conn.close()
 
-# Генерация изображения через Replicate
-async def generate_image(prompt: str, images: list[str] = None):
+async def db_execute(query, params=(), fetch=False, many=False):
+    def _execute():
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        if many:
+            cur.executemany(query, params)
+        else:
+            cur.execute(query, params)
+        rows = cur.fetchall() if fetch else None
+        conn.commit()
+        conn.close()
+        return rows
+    return await asyncio.to_thread(_execute)
+
+# --------------------------
+# Генерация изображения
+# --------------------------
+async def generate_image(prompt: str):
+    if not RENDER_URL or not REPLICATE_API_KEY:
+        return False, "RENDER_URL или ключ не задан"
+    headers = {
+        "Authorization": f"Token {REPLICATE_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {"prompt": prompt}
     try:
-        input_data = {"prompt": prompt}
-        if images:
-            input_data["image"] = images
-        output = replicate_client.run(
-            "google/nano-banana:9f3b10f33c31d7b8f1dc6f93aef7da71bdf2c1c6d53e11b6c0e4eafd7d7b0b3e",
-            input=input_data,
-        )
-        if isinstance(output, list) and len(output) > 0:
-            return output[0]
-        return None
+        async with aiohttp.ClientSession() as session:
+            async with session.post(RENDER_URL, json=payload, headers=headers, timeout=60) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    return False, f"Ошибка {resp.status}: {data}"
+                url = data.get("url") or data.get("result_url") or data.get("image_url")
+                if not url and isinstance(data.get("output"), list):
+                    url = data["output"][0]
+                return True, url
     except Exception as e:
-        logger.error(f"Ошибка генерации: {e}")
-        return None
+        return False, str(e)
 
-# Старт
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_balances:
-        user_balances[user_id] = FREE_GENERATIONS
+# --------------------------
+# Уведомления админу
+# --------------------------
+async def notify_admin(user: types.User, prompt: str, result: str):
+    if not ADMIN_ID:
+        return
+    text = f"👤 @{user.username or 'none'} (id:{user.id})\n⏱ {datetime.utcnow().isoformat()} UTC\n\nПромт:\n{prompt}"
+    try:
+        if result.startswith("http"):
+            await bot.send_message(ADMIN_ID, text)
+            await bot.send_photo(ADMIN_ID, result)
+        else:
+            await bot.send_message(ADMIN_ID, text + f"\n\nРезультат:\n{result}")
+    except Exception:
+        pass
 
-    text = (
-        "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
-        "нейросети Nano Banana (Google Gemini 2.5 Flash ⚡) — одной из самых мощных моделей.\n\n"
-        f"✨ У тебя {FREE_GENERATIONS} бесплатных генерации.\n\n"
-        "Нажмите кнопку «Сгенерировать» и отправьте от 1 до 4 изображений с подписью, "
-        "что нужно изменить, или просто напишите текст, чтобы создать новое изображение."
+# --------------------------
+# Ежедневный отчёт
+# --------------------------
+async def daily_report():
+    while True:
+        now_utc = datetime.now(timezone.utc)
+        moscow = now_utc.astimezone(timezone(timedelta(hours=3)))
+        target = moscow.replace(hour=DAILY_REPORT_HOUR, minute=0, second=0, microsecond=0)
+        if moscow >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - moscow).total_seconds())
+
+        date_iso = moscow.date().isoformat()
+        rows = await db_execute(
+            "SELECT COUNT(*), COUNT(DISTINCT user_id) FROM generations WHERE created_at LIKE ?",
+            (f"{date_iso}%",),
+            fetch=True
+        )
+        total, unique_users = rows[0]
+        top = await db_execute(
+            "SELECT user_id, COUNT(*) as c FROM generations WHERE created_at LIKE ? GROUP BY user_id ORDER BY c DESC LIMIT 5",
+            (f"{date_iso}%",),
+            fetch=True
+        )
+        lines = [
+            f"📊 Отчёт за {date_iso} (МСК)",
+            f"Всего генераций: {total}",
+            f"Уникальных пользователей: {unique_users}"
+        ]
+        if top:
+            lines.append("Топ-5 пользователей:")
+            for uid, c in top:
+                lines.append(f"{uid}: {c}")
+        await bot.send_message(ADMIN_ID, "\n".join(lines))
+
+# --------------------------
+# Хэндлеры
+# --------------------------
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
+    await db_execute(
+        "INSERT OR IGNORE INTO users (user_id, username, last_active) VALUES (?, ?, ?)",
+        (message.from_user.id, message.from_user.username, datetime.utcnow().isoformat())
     )
+    await message.reply("Привет! Отправь мне промт для генерации.")
 
-    await update.message.reply_text(text, reply_markup=main_menu())
-
-# Обработчик меню
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "generate":
-        await query.message.reply_text(
-            "Создавайте и редактируйте изображения прямо в чате.\n\n"
-            "Для вас работает Google Gemini 2.5 Flash — она же Nano Banana 🍌\n\n"
-            "Готовы начать?\n"
-            "Отправьте от 1 до 4 изображений, которые вы хотите изменить, или напишите в чат, что нужно создать"
-        )
-        await query.message.delete()
-
-    elif query.data == "balance":
-        balance = user_balances.get(query.from_user.id, FREE_GENERATIONS)
-        await query.message.reply_text(f"💰 У вас {balance} генераций.", reply_markup=main_menu())
-
-    elif query.data == "buy":
-        keyboard = [
-            [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
-            [InlineKeyboardButton("50 генераций — 200⭐", callback_data="buy_50")],
-            [InlineKeyboardButton("100 генераций — 400⭐", callback_data="buy_100")],
-        ]
-        await query.message.reply_text("Выберите пакет:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data == "help":
-        help_text = (
-            "ℹ️ Чтобы сгенерировать изображение, сначала нажмите кнопку «Сгенерировать».\n\n"
-            "После этого отправьте от 1 до 4 изображений с подписью, что нужно изменить, "
-            "или просто текст для новой картинки.\n\n"
-            "💰 Для покупок генераций используется Telegram Stars. "
-            "Если у вас их не хватает — пополните через Telegram → Кошелек → Пополнить."
-        )
-        await query.message.reply_text(help_text, reply_markup=main_menu())
-
-# Покупки
-async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    package_map = {
-        "buy_10": (10, 40),
-        "buy_50": (50, 200),
-        "buy_100": (100, 400),
-    }
-
-    if query.data in package_map:
-        gens, stars = package_map[query.data]
-
-        # Отправляем счёт через Telegram Stars
-        await query.message.reply_invoice(
-            title="Покупка генераций",
-            description=f"{gens} генераций для нейросети",
-            payload=f"buy_{gens}",
-            provider_token="",  # ❗ Для Stars можно оставить пустым
-            currency="XTR",
-            prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
-            start_parameter="stars-payment",
-        )
-
-# Обработка успешной оплаты
-async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment = update.message.successful_payment
-    user_id = update.effective_user.id
-
-    gens_map = {
-        "buy_10": 10,
-        "buy_50": 50,
-        "buy_100": 100,
-    }
-
-    gens = gens_map.get(payment.invoice_payload, 0)
-    if gens > 0:
-        user_balances[user_id] = user_balances.get(user_id, 0) + gens
-        await update.message.reply_text(
-            f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
-            reply_markup=main_menu()
-        )
-
-# Сообщения с текстом / фото
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    balance = user_balances.get(user_id, FREE_GENERATIONS)
-
-    if balance <= 0:
-        await update.message.reply_text(
-            "⚠️ У вас закончились генерации. Пополните баланс через меню.",
-            reply_markup=main_menu()
-        )
-        return
-
-    prompt = update.message.caption or update.message.text
-    if not prompt:
-        await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
-        return
-
-    await update.message.reply_text("⏳ Генерация изображения...")
-
-    images = []
-    if update.message.photo:
-        file = await update.message.photo[-1].get_file()
-        images.append(file.file_path)
-
-    result = await generate_image(prompt, images if images else None)
-
-    if result:
-        await update.message.reply_photo(result)
-        user_balances[user_id] -= 1
-        keyboard = [
-            [
-                InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-                InlineKeyboardButton("✅ Завершить", callback_data="end"),
-            ]
-        ]
-        await update.message.reply_text(
-            "Напишите в чат, если нужно изменить что-то ещё.",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+@dp.message_handler(commands=["balance"])
+async def cmd_balance(message: types.Message):
+    row = await db_execute("SELECT balance, total_generations FROM users WHERE user_id=?", (message.from_user.id,), fetch=True)
+    if row:
+        balance, gens = row[0]
+        await message.reply(f"Ваш баланс: {balance}\nВсего генераций: {gens}")
     else:
-        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+        await message.reply("Вы ещё не зарегистрированы. Используйте /start")
 
-# Завершение сессии
-async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("Главное меню:", reply_markup=main_menu())
+@dp.message_handler(content_types=types.ContentType.TEXT)
+async def handle_prompt(message: types.Message):
+    user = message.from_user
+    prompt = message.text.strip()
 
-# Запуск приложения
-def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
-    app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
-    app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-
-    # Webhook для Render
-    port = int(os.environ.get("PORT", 5000))
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TOKEN,
-        webhook_url=f"{RENDER_URL}/{TOKEN}"
+    await db_execute(
+        "INSERT OR IGNORE INTO users (user_id, username, last_active) VALUES (?, ?, ?)",
+        (user.id, user.username, datetime.utcnow().isoformat())
     )
+
+    row = await db_execute("SELECT balance FROM users WHERE user_id=?", (user.id,), fetch=True)
+    balance = row[0][0] if row else 0
+    if balance < COST_PER_IMAGE:
+        await message.reply("Недостаточно звёзд на балансе. Пополните через Telegram Stars.")
+        return
+
+    await db_execute("UPDATE users SET balance=balance-? WHERE user_id=?", (COST_PER_IMAGE, user.id))
+    await message.reply("Генерация...")
+
+    ok, result = await generate_image(prompt)
+    if not ok:
+        await db_execute("UPDATE users SET balance=balance+? WHERE user_id=?", (COST_PER_IMAGE, user.id))
+        await message.reply(f"Ошибка: {result}")
+        return
+
+    await db_execute(
+        "INSERT INTO generations (user_id, prompt, type, result_url, created_at) VALUES (?, ?, ?, ?, ?)",
+        (user.id, prompt, "image", result, datetime.utcnow().isoformat())
+    )
+    await db_execute("UPDATE users SET total_generations=total_generations+1 WHERE user_id=?", (user.id,))
+
+    try:
+        if result.startswith("http"):
+            await bot.send_photo(user.id, result, caption="Готово ✅")
+        else:
+            await message.reply(f"Результат: {result}")
+    except Exception:
+        pass
+
+    await notify_admin(user, prompt, result)
+
+# --------------------------
+# Stars пополнение
+# --------------------------
+async def handle_successful_star_payment(user_id: int, amount: int):
+    await db_execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, user_id))
+    try:
+        await bot.send_message(user_id, f"Ваш баланс пополнен на {amount}⭐")
+    except Exception:
+        pass
+
+# --------------------------
+# Запуск
+# --------------------------
+async def on_startup(dp):
+    init_db()
+    asyncio.create_task(daily_report())
 
 if __name__ == "__main__":
-    main()
+    executor.start_polling(dp, on_startup=on_startup)
 
 
