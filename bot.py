@@ -5,7 +5,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
-    InputMediaPhoto,
     LabeledPrice,
 )
 from telegram.ext import (
@@ -29,7 +28,6 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL = os.getenv("RENDER_URL")
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
-PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN")  # XTR для Stars
 
 # Replicate клиент
 replicate_client = replicate.Client(api_token=REPLICATE_API_KEY)
@@ -73,7 +71,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
-        "нейросети Nano Banana (Google Gemini 2.5 Flash ⚡).\n\n"
+        "нейросети Nano Banana (Google Gemini 2.5 Flash ⚡) — одной из самых мощных моделей.\n\n"
         f"✨ У тебя {FREE_GENERATIONS} бесплатных генерации.\n\n"
         "Нажмите кнопку «Сгенерировать» и отправьте от 1 до 4 изображений с подписью, "
         "что нужно изменить, или просто напишите текст, чтобы создать новое изображение."
@@ -123,51 +121,41 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     package_map = {
-        "buy_10": (10, 40, "Пакет 10 генераций"),
-        "buy_50": (50, 200, "Пакет 50 генераций"),
-        "buy_100": (100, 400, "Пакет 100 генераций"),
+        "buy_10": (10, 40),
+        "buy_50": (50, 200),
+        "buy_100": (100, 400),
     }
 
     if query.data in package_map:
-        gens, stars, title = package_map[query.data]
+        gens, stars = package_map[query.data]
 
-        prices = [LabeledPrice(label=title, amount=stars * 100)]  # Stars → XTR (в копейках)
-        payload = f"stars_{query.data}_{uuid4()}"
-
-        await context.bot.send_invoice(
-            chat_id=query.from_user.id,
-            title=title,
-            description=f"Покупка {gens} генераций",
-            payload=payload,
-            provider_token=PAYMENT_PROVIDER_TOKEN,
+        # Отправляем счёт через Telegram Stars
+        await query.message.reply_invoice(
+            title="Покупка генераций",
+            description=f"{gens} генераций для нейросети",
+            payload=f"buy_{gens}",
+            provider_token="",  # ❗ Для Stars можно оставить пустым
             currency="XTR",
-            prices=prices,
-            start_parameter="stars-purchase",
+            prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
+            start_parameter="stars-payment",
         )
 
-# Предварительный чек
-async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    await query.answer(ok=True)
-
-# Успешная оплата
+# Обработка успешной оплаты
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
     user_id = update.effective_user.id
-    payload = update.message.successful_payment.invoice_payload
 
-    if "buy_10" in payload:
-        gens = 10
-    elif "buy_50" in payload:
-        gens = 50
-    elif "buy_100" in payload:
-        gens = 100
-    else:
-        gens = 0
+    gens_map = {
+        "buy_10": 10,
+        "buy_50": 50,
+        "buy_100": 100,
+    }
 
+    gens = gens_map.get(payment.invoice_payload, 0)
     if gens > 0:
         user_balances[user_id] = user_balances.get(user_id, 0) + gens
         await update.message.reply_text(
-            f"✅ Вы купили {gens} генераций. Они уже на вашем балансе!",
+            f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
             reply_markup=main_menu()
         )
 
@@ -227,10 +215,8 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
     app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
     app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
-
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-    app.add_handler(CallbackQueryHandler(precheckout_handler, pattern="^precheckout$"))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
     # Webhook для Render
     port = int(os.environ.get("PORT", 5000))
@@ -243,3 +229,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
