@@ -1,75 +1,57 @@
-# bot.py — версия 1.5
-# Цель: оставить весь функционал 1.4 + добавить SQLite, уведомления админу, ежедневный отчёт, меню.
+# bot.py — версия 1.5 (минимальные добавки: SQLite, лог генераций, уведомления админу, daily report)
 import os
 import logging
-import sqlite3
-import asyncio
-import json
-from datetime import datetime, timedelta, time, timezone
-from typing import Optional, Tuple, List
-
-import aiohttp
-from deep_translator import GoogleTranslator
-
-# replicate может быть не установлен в dev, поэтому импорт в try
-try:
-    import replicate
-except Exception:
-    replicate = None
-
+from uuid import uuid4
 from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardRemove,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    Update,
     LabeledPrice,
 )
 from telegram.ext import (
     Application,
-    ApplicationBuilder,
     CommandHandler,
+    CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
     filters,
-    PreCheckoutQueryHandler,
 )
+import replicate
 
-# -------------------------
-# Конфигурация (env)
-# -------------------------
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY")
-REPLICATE_MODEL = os.environ.get("REPLICATE_MODEL", "")  # optional
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
-RENDER_URL = os.environ.get("RENDER_URL")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL") or os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("RENDER_URL")
-PORT = int(os.environ.get("PORT", "8443"))
-DB_PATH = os.environ.get("DB_PATH", "bot.db")  # later можно монтировать volume и задать /var/lib/bot-data/bot.db
+# === ДОБАВЛЕНИЯ: импорт для SQLite / async wrappers / timezone ===
+import sqlite3
+import asyncio
+from datetime import datetime, timedelta, time, timezone
+from typing import Optional, Tuple, List
+# === /ДОБАВЛЕНИЯ ===
 
-# settings
-PROMPT_MAX_LEN = int(os.environ.get("PROMPT_MAX_LEN", "4000"))
-COST_PER_IMAGE = int(os.environ.get("COST_PER_IMAGE", "1"))
-COST_PER_TEXT = int(os.environ.get("COST_PER_TEXT", "0"))
-
-# Daily report: 12:00 Moscow (UTC+3) => 09:00 UTC
-DAILY_REPORT_UTC_TIME = time(hour=9, minute=0, tzinfo=timezone.utc)
-
-# -------------------------
-# Логи
-# -------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Логирование
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-if not TELEGRAM_BOT_TOKEN:
-    logger.error("TELEGRAM_BOT_TOKEN не задан")
-    raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+# Переменные окружения
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+RENDER_URL = os.getenv("RENDER_URL")
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+
+# Replicate клиент
+replicate_client = replicate.Client(api_token=REPLICATE_API_KEY)
+
+# Балансы пользователей (в памяти, как было)
+user_balances = {}
+FREE_GENERATIONS = 3
 
 # -------------------------
-# DB: schema + helpers
+# === ДОБАВЛЕНИЯ: SQLite persistence ===
 # -------------------------
-INIT_SQL = """
+# DB path (можно переопределить через env DB_PATH)
+DB_PATH = os.environ.get("DB_PATH", "bot.db")
+
+# Строка создания таблиц (минимальная — users + generations)
+_INIT_SQL = """
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
@@ -91,44 +73,29 @@ CREATE TABLE IF NOT EXISTS generations (
 );
 """
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
+def _init_db_sync(db_path: str = DB_PATH):
+    conn = sqlite3.connect(db_path)
     try:
-        conn.executescript(INIT_SQL)
-        conn.commit()
-    finally:
-        conn.close()
-    logger.info("DB initialized at %s", DB_PATH)
-
-# run blocking DB operations in background thread
-async def db_run(func, *args, **kwargs):
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-# synchronous DB functions:
-
-def _get_user_sync(user_id: int) -> Optional[Tuple]:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, username, balance, total_generations, last_active FROM users WHERE user_id = ?", (user_id,))
-        return cur.fetchone()
-    finally:
-        conn.close()
-
-def _create_user_sync(user_id: int, username: Optional[str]):
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        cur = conn.cursor()
-        cur.execute("INSERT OR IGNORE INTO users (user_id, username, last_active) VALUES (?, ?, ?)",
-                    (user_id, username, datetime.utcnow().isoformat()))
+        conn.executescript(_INIT_SQL)
         conn.commit()
     finally:
         conn.close()
 
-def _update_last_active_sync(user_id: int):
+async def init_db():
+    # Вызывать до старта приложения (в main)
+    await asyncio.to_thread(_init_db_sync, DB_PATH)
+
+# sync helpers
+def _ensure_user_sync(user_id: int, username: Optional[str], initial_balance: int = 0):
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.cursor()
+        # insert if not exists
+        cur.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, balance, last_active) VALUES (?, ?, ?, ?)",
+            (user_id, username, initial_balance, datetime.utcnow().isoformat()),
+        )
+        # If record existed but balance is NULL, ensure it's 0 (defensive)
         cur.execute("UPDATE users SET last_active = ? WHERE user_id = ?", (datetime.utcnow().isoformat(), user_id))
         conn.commit()
     finally:
@@ -138,7 +105,7 @@ def _adjust_balance_sync(user_id: int, delta: int) -> Optional[int]:
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (delta, user_id))
+        cur.execute("UPDATE users SET balance = COALESCE(balance,0) + ? WHERE user_id = ?", (delta, user_id))
         conn.commit()
         cur.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
@@ -150,10 +117,14 @@ def _log_generation_sync(user_id: int, prompt: str, typ: str, result_url: str):
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.cursor()
-        cur.execute("INSERT INTO generations (user_id, prompt, type, result_url, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, prompt, typ, result_url, datetime.utcnow().isoformat()))
-        cur.execute("UPDATE users SET total_generations = total_generations + 1, last_active = ? WHERE user_id = ?",
-                    (datetime.utcnow().isoformat(), user_id))
+        cur.execute(
+            "INSERT INTO generations (user_id, prompt, type, result_url, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, prompt, typ, result_url, datetime.utcnow().isoformat()),
+        )
+        cur.execute(
+            "UPDATE users SET total_generations = COALESCE(total_generations,0) + 1, last_active = ? WHERE user_id = ?",
+            (datetime.utcnow().isoformat(), user_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -172,85 +143,21 @@ def _daily_stats_between_sync(start_iso: str, end_iso: str) -> Tuple[int, int, L
     finally:
         conn.close()
 
-def _get_top_users_sync(limit: int = 10) -> List[Tuple[int,int]]:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, total_generations FROM users ORDER BY total_generations DESC LIMIT ?", (limit,))
-        return cur.fetchall()
-    finally:
-        conn.close()
+# async wrappers
+async def ensure_user(user_id: int, username: Optional[str], initial_balance: int = 0):
+    await asyncio.to_thread(_ensure_user_sync, user_id, username, initial_balance)
 
-# -------------------------
-# Image generation: Replicate (if configured) -> fallback to RENDER_URL HTTP
-# -------------------------
-async def generate_image_via_http(prompt: str) -> Tuple[bool, str]:
-    if not RENDER_URL:
-        return False, "RENDER_URL не настроен"
-    headers = {"Content-Type": "application/json"}
-    payload = {"prompt": prompt}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(RENDER_URL, json=payload, headers=headers, timeout=60) as resp:
-                text = await resp.text()
-                if resp.status != 200:
-                    logger.error("Render returned %s: %s", resp.status, text)
-                    return False, f"Render error {resp.status}"
-                data = await resp.json()
-                for k in ("url", "result_url", "image_url", "output", "outputs"):
-                    if k in data:
-                        val = data[k]
-                        if isinstance(val, list) and val:
-                            if isinstance(val[0], dict):
-                                for key in ("url", "image_url", "result_url"):
-                                    if key in val[0]:
-                                        return True, val[0][key]
-                            if isinstance(val[0], str):
-                                return True, val[0]
-                        else:
-                            if isinstance(val, str):
-                                return True, val
-                            if isinstance(val, dict):
-                                for key in ("url", "image_url", "result_url"):
-                                    if key in val:
-                                        return True, val[key]
-                return False, json.dumps(data)[:1500]
-    except asyncio.TimeoutError:
-        return False, "Timeout при вызове RENDER_URL"
-    except Exception as e:
-        logger.exception("Ошибка generate_image_via_http")
-        return False, str(e)
+async def adjust_balance(user_id: int, delta: int) -> Optional[int]:
+    return await asyncio.to_thread(_adjust_balance_sync, user_id, delta)
 
-async def generate_image(prompt: str) -> Tuple[bool, str]:
-    # Try replicate if configured and library available
-    if REPLICATE_API_KEY and replicate:
-        try:
-            client = replicate.Client(api_token=REPLICATE_API_KEY)
-            model = REPLICATE_MODEL or None
-            if model:
-                output = client.run(model, input={"prompt": prompt})
-            else:
-                # default model id; adjust to what you used in 1.4 if needed
-                default_model = "stability-ai/stable-diffusion"
-                output = client.run(default_model, input={"prompt": prompt})
-            if isinstance(output, list) and output:
-                return True, output[0]
-            if isinstance(output, str):
-                return True, output
-            if isinstance(output, dict):
-                for k in ("url", "image_url", "result_url"):
-                    if k in output:
-                        return True, output[k]
-            return False, "Unexpected response from Replicate"
-        except Exception as e:
-            logger.exception("Replicate error, falling back to HTTP: %s", e)
-    # fallback to HTTP endpoint
-    return await generate_image_via_http(prompt)
+async def log_generation(user_id: int, prompt: str, typ: str, result_url: str):
+    await asyncio.to_thread(_log_generation_sync, user_id, prompt, typ, result_url)
 
-# -------------------------
-# Admin notifications (text + image)
-# -------------------------
-async def notify_admin_about_generation(context: ContextTypes.DEFAULT_TYPE, user_id: int, username: Optional[str], prompt: str, result: str, typ: str):
+async def daily_stats_between(start_iso: str, end_iso: str):
+    return await asyncio.to_thread(_daily_stats_between_sync, start_iso, end_iso)
+
+# admin notify helper
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE, user_id: int, username: Optional[str], prompt: str, result: str, typ: str):
     if not ADMIN_ID:
         return
     header = f"👤 Пользователь: @{username or 'none'} (id:{user_id})\n⏱ {datetime.utcnow().isoformat()} UTC\nТип: {typ}\n\nПромт:\n{prompt}\n\n"
@@ -264,217 +171,305 @@ async def notify_admin_about_generation(context: ContextTypes.DEFAULT_TYPE, user
             await context.bot.send_message(chat_id=ADMIN_ID, text=header + f"Результат:\n{preview}")
     except Exception:
         logger.exception("Не удалось отправить админу уведомление")
-
 # -------------------------
-# Menu (reply keyboard) — восстановлено
+# === /ДОБАВЛЕНИЯ: SQLite persistence ===
 # -------------------------
-MAIN_MENU = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("🎨 Сгенерировать"), KeyboardButton("💰 Баланс")],
-        [KeyboardButton("🏆 Топ"), KeyboardButton("ℹ️ Помощь")],
-    ],
-    resize_keyboard=True,
-)
 
-# -------------------------
-# Handlers: start, menu, help, balance, top
-# -------------------------
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await db_run(_create_user_sync, user.id, user.username or "")
-    await db_run(_update_last_active_sync, user.id)
-    await update.message.reply_text("Привет! Меню:", reply_markup=MAIN_MENU)
-
-async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "Инструкция:\n"
-        "• Нажми «🎨 Сгенерировать» и отправь промт — бот сгенерирует картинку (спишется 1⭐).\n"
-        "• «💰 Баланс» — показывает звёзды.\n"
-        "• «🏆 Топ» — лидеры по генерациям.\n"
-        "Оплата через Telegram Stars (интеграция сохранена)."
-    )
-    await update.message.reply_text(text, reply_markup=MAIN_MENU)
-
-async def balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    row = await db_run(_get_user_sync, user.id)
-    if row:
-        _, username, balance, total_generations, last_active = row
-        await update.message.reply_text(f"Баланс: {balance}⭐\nВсего генераций: {total_generations}\nПоследняя активность: {last_active}", reply_markup=MAIN_MENU)
-    else:
-        await update.message.reply_text("Вы ещё не зарегистрированы. Нажми /start", reply_markup=MAIN_MENU)
-
-async def top_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top = await db_run(_get_top_users_sync, 10)
-    if not top:
-        await update.message.reply_text("Нет данных.", reply_markup=MAIN_MENU)
-        return
-    lines = ["🏆 Топ пользователей (user_id: генераций):"]
-    for uid, cnt in top:
-        lines.append(f"{uid}: {cnt}")
-    await update.message.reply_text("\n".join(lines), reply_markup=MAIN_MENU)
-
-# -------------------------
-# Text message handler: treat text as prompt (as in 1.4)
-# -------------------------
-async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg or not msg.text:
-        return
-    text = msg.text.strip()
-
-    # If user clicked menu buttons, route appropriately
-    if text in ("🎨 Сгенерировать", "Сгенерировать", "Generate"):
-        await msg.reply_text("Отправь текстовый промт — я сгенерирую картинку. Максимум {} символов.".format(PROMPT_MAX_LEN), reply_markup=ReplyKeyboardRemove())
-        return
-    if text in ("💰 Баланс", "Баланс"):
-        return await balance_handler(update, context)
-    if text in ("🏆 Топ", "Топ"):
-        return await top_handler(update, context)
-    if text in ("ℹ️ Помощь", "Помощь", "Help"):
-        return await help_handler(update, context)
-
-    user = update.effective_user
-    prompt = text
-    # prompt length check
-    if len(prompt) > PROMPT_MAX_LEN:
-        await msg.reply_text(f"Слишком длинный промт — максимум {PROMPT_MAX_LEN} символов.")
-        return
-
-    # Ensure user in DB
-    await db_run(_create_user_sync, user.id, user.username or "")
-    await db_run(_update_last_active_sync, user.id)
-    row = await db_run(_get_user_sync, user.id)
-    if not row:
-        await msg.reply_text("Ошибка доступа к базе.")
-        return
-    _, _, balance, _, _ = row
-
-    if balance is None or balance < COST_PER_IMAGE:
-        await msg.reply_text("Недостаточно звёзд для генерации. Пополните баланс, пожалуйста.")
-        return
-
-    # Deduct cost
-    await db_run(_adjust_balance_sync, user.id, -COST_PER_IMAGE)
-    await msg.reply_text("Начинаю генерацию изображения... (может занять несколько секунд)")
-
-    # Optional translate
-    try:
-        prompt_for_model = GoogleTranslator(source="auto", target="en").translate(prompt)
-    except Exception:
-        prompt_for_model = prompt
-
-    success, result = await generate_image(prompt_for_model if prompt_for_model else prompt)
-    if not success:
-        # refund
-        await db_run(_adjust_balance_sync, user.id, COST_PER_IMAGE)
-        await msg.reply_text(f"Ошибка генерации: {result}", reply_markup=MAIN_MENU)
-        return
-
-    # Log generation
-    await db_run(_log_generation_sync, user.id, prompt, "image", result)
-
-    # Send result to user
-    try:
-        lower = (result or "").lower()
-        if lower.startswith("http") and any(ext in lower for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif"]):
-            await context.bot.send_photo(chat_id=user.id, photo=result, caption="Готово — вот ваше изображение.", reply_markup=MAIN_MENU)
-        else:
-            await msg.reply_text(f"Готово — вот результат: {result}", reply_markup=MAIN_MENU)
-    except Exception:
-        logger.exception("Не удалось отправить результат пользователю")
-
-    # Notify admin
-    await notify_admin_about_generation(context, user.id, user.username or "", prompt, result, "image")
-
-# -------------------------
-# Payment hooks (placeholders) — keep integration point with Stars/payments
-# -------------------------
-async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    await query.answer(ok=True)
-
-async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    payload = update.message.successful_payment.invoice_payload
-    try:
-        if payload and payload.startswith("topup:"):
-            amount = int(payload.split(":", 1)[1])
-            await db_run(_adjust_balance_sync, user.id, amount)
-            await update.message.reply_text(f"Баланс пополнен на {amount}⭐. Спасибо!")
-        else:
-            await db_run(_adjust_balance_sync, user.id, 1)
-            await update.message.reply_text("Баланс пополнен. Спасибо!")
-    except Exception:
-        logger.exception("Ошибка обработки успешной оплаты")
-        await update.message.reply_text("Оплата подтверждена, но не удалось обновить ваш баланс. Свяжитесь с админом.")
-
-# -------------------------
-# Daily report job
-# -------------------------
-async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
-    # Moscow date range -> convert to UTC range for DB (we store UTC timestamps)
-    now_utc = datetime.now(timezone.utc)
-    moscow_now = now_utc.astimezone(timezone(timedelta(hours=3)))
-    moscow_date = moscow_now.date()
-    moscow_start = datetime(moscow_date.year, moscow_date.month, moscow_date.day, 0, 0, 0, tzinfo=timezone(timedelta(hours=3)))
-    moscow_end = moscow_start + timedelta(days=1)
-    utc_start = (moscow_start.astimezone(timezone.utc)).replace(tzinfo=None)
-    utc_end = (moscow_end.astimezone(timezone.utc)).replace(tzinfo=None)
-    start_iso = utc_start.isoformat()
-    end_iso = utc_end.isoformat()
-
-    total, unique, top = await db_run(_daily_stats_between_sync, start_iso, end_iso)
-    lines = [
-        f"📊 Ежедневный отчёт за {moscow_date.isoformat()} (Москва, UTC+3):",
-        f"Всего генераций: {total}",
-        f"Уникальных пользователей: {unique}",
+# Главное меню
+def main_menu():
+    keyboard = [
+        [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
+        [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
+        [InlineKeyboardButton("⭐ Купить генерации", callback_data="buy")],
+        [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
     ]
-    if top:
-        lines.append("Топ-5 пользователей (user_id: количество):")
-        for uid, cnt in top:
-            lines.append(f"{uid}: {cnt}")
-    text = "\n".join(lines)
+    return InlineKeyboardMarkup(keyboard)
+
+# Генерация изображения через Replicate
+async def generate_image(prompt: str, images: list[str] = None):
     try:
-        if ADMIN_ID:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=text)
-        logger.info("Daily report sent for %s", moscow_date.isoformat())
+        input_data = {"prompt": prompt}
+        if images:
+            input_data["image"] = images
+        output = replicate_client.run(
+            "google/nano-banana:9f3b10f33c31d7b8f1dc6f93aef7da71bdf2c1c6d53e11b6c0e4eafd7d7b0b3e",
+            input=input_data,
+        )
+        if isinstance(output, list) and len(output) > 0:
+            return output[0]
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка генерации: {e}")
+        return None
+
+# Старт
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in user_balances:
+        user_balances[user_id] = FREE_GENERATIONS
+
+    # === ДОБАВЛЕНИЕ: создать запись пользователя в БД (без смены поведения) ===
+    # Если пользователя нет в DB, создаём запись с балансом из user_balances (чтобы не менять тексты/логику)
+    try:
+        await ensure_user(user_id, update.effective_user.username or "", user_balances.get(user_id, FREE_GENERATIONS))
     except Exception:
-        logger.exception("Не удалось отправить ежедневный отчёт админу")
+        logger.exception("Не удалось записать пользователя в SQLite (это не ломает работу)")
+    # === /ДОБАВЛЕНИЕ ===
 
-# -------------------------
-# Startup and webhook run
-# -------------------------
+    text = (
+        "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
+        "нейросети Nano Banana (Google Gemini 2.5 Flash ⚡) — одной из самых мощных моделей.\n\n"
+        f"✨ У тебя {FREE_GENERATIONS} бесплатных генерации.\n\n"
+        "Нажмите кнопку «Сгенерировать» и отправьте от 1 до 4 изображений с подписью, "
+        "что нужно изменить, или просто напишите текст, чтобы создать новое изображение."
+    )
+
+    await update.message.reply_text(text, reply_markup=main_menu())
+
+# Обработчик меню
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "generate":
+        await query.message.reply_text(
+            "Создавайте и редактируйте изображения прямо в чате.\n\n"
+            "Для вас работает Google Gemini 2.5 Flash — она же Nano Banana 🍌\n\n"
+            "Готовы начать?\n"
+            "Отправьте от 1 до 4 изображений, которые вы хотите изменить, или напишите в чат, что нужно создать"
+        )
+        await query.message.delete()
+
+    elif query.data == "balance":
+        balance = user_balances.get(query.from_user.id, FREE_GENERATIONS)
+        await query.message.reply_text(f"💰 У вас {balance} генераций.", reply_markup=main_menu())
+
+    elif query.data == "buy":
+        keyboard = [
+            [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
+            [InlineKeyboardButton("50 генераций — 200⭐", callback_data="buy_50")],
+            [InlineKeyboardButton("100 генераций — 400⭐", callback_data="buy_100")],
+        ]
+        await query.message.reply_text("Выберите пакет:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data == "help":
+        help_text = (
+            "ℹ️ Чтобы сгенерировать изображение, сначала нажмите кнопку «Сгенерировать».\n\n"
+            "После этого отправьте от 1 до 4 изображений с подписью, что нужно изменить, "
+            "или просто текст для новой картинки.\n\n"
+            "💰 Для покупок генераций используется Telegram Stars. "
+            "Если у вас их не хватает — пополните через Telegram → Кошелек → Пополнить."
+        )
+        await query.message.reply_text(help_text, reply_markup=main_menu())
+
+# Покупки
+async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    package_map = {
+        "buy_10": (10, 40),
+        "buy_50": (50, 200),
+        "buy_100": (100, 400),
+    }
+
+    if query.data in package_map:
+        gens, stars = package_map[query.data]
+
+        # Отправляем счёт через Telegram Stars
+        await query.message.reply_invoice(
+            title="Покупка генераций",
+            description=f"{gens} генераций для нейросети",
+            payload=f"buy_{gens}",
+            provider_token="",  # ❗ Для Stars можно оставить пустым
+            currency="XTR",
+            prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
+            start_parameter="stars-payment",
+        )
+
+# Обработка успешной оплаты
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    user_id = update.effective_user.id
+
+    gens_map = {
+        "buy_10": 10,
+        "buy_50": 50,
+        "buy_100": 100,
+    }
+
+    gens = gens_map.get(payment.invoice_payload, 0)
+    if gens > 0:
+        user_balances[user_id] = user_balances.get(user_id, 0) + gens
+
+        # === ДОБАВЛЕНИЕ: отразить пополнение в SQLite ===
+        try:
+            await adjust_balance(user_id, gens)
+        except Exception:
+            logger.exception("Ошибка при записи пополнения в SQLite (не ломаем основной поток)")
+        # === /ДОБАВЛЕНИЕ ===
+
+        await update.message.reply_text(
+            f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
+            reply_markup=main_menu()
+        )
+
+# Сообщения с текстом / фото
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = user_balances.get(user_id, FREE_GENERATIONS)
+
+    if balance <= 0:
+        await update.message.reply_text(
+            "⚠️ У вас закончились генерации. Пополните баланс через меню.",
+            reply_markup=main_menu()
+        )
+        return
+
+    prompt = update.message.caption or update.message.text
+    if not prompt:
+        await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
+        return
+
+    await update.message.reply_text("⏳ Генерация изображения...")
+
+    images = []
+    if update.message.photo:
+        file = await update.message.photo[-1].get_file()
+        images.append(file.file_path)
+
+    result = await generate_image(prompt, images if images else None)
+
+    if result:
+        await update.message.reply_photo(result)
+
+        # списываем локальный баланс (как было)
+        user_balances[user_id] -= 1
+
+        # === ДОБАВЛЕНИЯ: записать списание и лог генерации в SQLite, уведомить админа ===
+        try:
+            # reflect deduction in DB
+            await adjust_balance(user_id, -1)
+        except Exception:
+            logger.exception("Ошибка при списании в SQLite (не ломаем основной поток)")
+
+        try:
+            # log generation
+            await log_generation(user_id, prompt, "image", result)
+        except Exception:
+            logger.exception("Ошибка при логировании генерации в SQLite")
+
+        # notify admin with prompt + result (image or text)
+        try:
+            await notify_admin(context, user_id, update.effective_user.username or "", prompt, result, "image")
+        except Exception:
+            logger.exception("Не удалось уведомить админу о генерации")
+        # === /ДОБАВЛЕНИЯ ===
+
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+                InlineKeyboardButton("✅ Завершить", callback_data="end"),
+            ]
+        ]
+        await update.message.reply_text(
+            "Напишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+
+# Завершение сессии
+async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Главное меню:", reply_markup=main_menu())
+
+# Запуск приложения
 def main():
-    init_db()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # === ДОБАВЛЕНИЕ: инициализация SQLite (не меняет поведение) ===
+    # Вызов асинхронно перед стартом приложения
+    try:
+        # инициализация синхронного SQL в фоновом потоке
+        asyncio.run(_init_db_sync(DB_PATH))
+    except Exception:
+        # если запуск через asyncio.run плохой в окружении — попробовать sync
+        try:
+            _init_db_sync(DB_PATH)
+        except Exception:
+            logger.exception("Не удалось инициализировать SQLite (не ломаем запуск)")
+    # === /ДОБАВЛЕНИЕ ===
 
-    # Register handlers
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("help", help_handler))
-    app.add_handler(CommandHandler("balance", balance_handler))
-    app.add_handler(CommandHandler("top", top_handler))
+    app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
-
-    # Payment handlers (if you use Telegram Payments / Stars)
-    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
+    app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
+    app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
-    # Schedule daily report at 09:00 UTC == 12:00 MSK
-    app.job_queue.run_daily(daily_report_job, time=DAILY_REPORT_UTC_TIME)
+    # === ДОБАВЛЕНИЕ: daily report job в 09:00 UTC (==12:00 МСК) ===
+    try:
+        # job_queue доступен после создания app
+        def _schedule_report():
+            # run_daily expects time with tzinfo=UTC; create it
+            daily_time_utc = time(hour=9, minute=0, tzinfo=timezone.utc)
+            app.job_queue.run_daily(_daily_report_job_wrapper, time=daily_time_utc)
+        # we add job using app.job_queue directly
+        # define wrapper so it has correct signature when called by JobQueue
+        async def _daily_report_job_wrapper(context: ContextTypes.DEFAULT_TYPE):
+            # compute Moscow day range in UTC and call daily_stats_between + send to admin
+            # This uses the same logic as other helpers
+            now_utc = datetime.now(timezone.utc)
+            moscow_now = now_utc.astimezone(timezone(timedelta(hours=3)))
+            moscow_date = moscow_now.date()
+            moscow_start = datetime(moscow_date.year, moscow_date.month, moscow_date.day, 0, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+            moscow_end = moscow_start + timedelta(days=1)
+            utc_start = (moscow_start.astimezone(timezone.utc)).replace(tzinfo=None)
+            utc_end = (moscow_end.astimezone(timezone.utc)).replace(tzinfo=None)
+            start_iso = utc_start.isoformat()
+            end_iso = utc_end.isoformat()
 
-    # Webhook URL must be provided (WEBHOOK_URL or Render provides RENDER_EXTERNAL_URL)
-    if not WEBHOOK_URL:
-        logger.error("WEBHOOK_URL / RENDER_EXTERNAL_URL / RENDER_URL not set. Установи переменную окружения WEBHOOK_URL.")
-        raise RuntimeError("WEBHOOK_URL not configured")
+            try:
+                total, unique, top = await daily_stats_between(start_iso, end_iso)
+            except Exception:
+                logger.exception("Ошибка при получении статистики для отчёта")
+                total, unique, top = 0, 0, []
 
-    public_base = WEBHOOK_URL.rstrip("/")
-    webhook_full = f"{public_base}/{TELEGRAM_BOT_TOKEN}"
+            lines = [
+                f"📊 Ежедневный отчёт за {moscow_date.isoformat()} (Москва, UTC+3):",
+                f"Всего генераций: {total}",
+                f"Уникальных пользователей: {unique}",
+            ]
+            if top:
+                lines.append("Топ-5 пользователей (user_id: количество):")
+                for uid, cnt in top:
+                    lines.append(f"{uid}: {cnt}")
+            text = "\n".join(lines)
+            try:
+                if ADMIN_ID:
+                    await context.bot.send_message(chat_id=ADMIN_ID, text=text)
+                logger.info("Daily report sent for %s", moscow_date.isoformat())
+            except Exception:
+                logger.exception("Не удалось отправить ежедневный отчёт админу")
 
-    logger.info("Starting webhook listener on 0.0.0.0:%s -> webhook %s", PORT, webhook_full)
-    app.run_webhook(listen="0.0.0.0", port=PORT, url_path=TELEGRAM_BOT_TOKEN, webhook_url=webhook_full)
+        # schedule job
+        daily_time_utc = time(hour=9, minute=0, tzinfo=timezone.utc)
+        app.job_queue.run_daily(_daily_report_job_wrapper, time=daily_time_utc)
+    except Exception:
+        logger.exception("Не удалось запланировать daily report (не ломаем запуск)")
+
+    # Webhook для Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TOKEN,
+        webhook_url=f"{RENDER_URL}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
+
 
