@@ -108,7 +108,7 @@ async def generate_image(prompt: str, images: list[str] = None):
         if images:
             input_data["image"] = images
         output = replicate_client.run(
-            "google/nano-banana:9f3b10f33c31d7b8f1dc6f93aef7da71bdf2c1c6d53e11b6c0e4eafd7d7b0b3e",
+            "google/nano-banana:5de8913db93a00e6d5e37b4f9e17f4394a0c5a52e4eaa7dd79e7abf5ac2f27b5",
             input=input_data,
         )
         if isinstance(output, list) and len(output) > 0:
@@ -313,6 +313,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
