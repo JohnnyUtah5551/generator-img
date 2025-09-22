@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL = os.getenv("RENDER_URL")
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
 # Replicate клиент
-replicate_client = replicate.Client(api_token=REPLICATE_API_KEY)
+replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
 # Настройка базы данных
 DB_FILE = "bot.db"
@@ -314,11 +314,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # ===== ТЕСТ: проверка доступных версий nano-banana =====
-    print("=== Доступные версии модели google/nano-banana ===")
-    for v in replicate.models.get("google/nano-banana").versions.list():
-        print(v.id)
-    print("===================================================")
 
 
 
