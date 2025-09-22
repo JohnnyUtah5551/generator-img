@@ -314,6 +314,13 @@ def main():
 if __name__ == "__main__":
     main()
 
+    # ===== ТЕСТ: проверка доступных версий nano-banana =====
+    print("=== Доступные версии модели google/nano-banana ===")
+    for v in replicate.models.get("google/nano-banana").versions.list():
+        print(v.id)
+    print("===================================================")
+
+
 
 
 
