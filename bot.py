@@ -294,6 +294,17 @@ def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
 
+    # ===== Аналитический блок: вывести доступные версии nano-banana при старте =====
+    try:
+        print("=== Доступные версии модели google/nano-banana ===")
+        model = replicate_client.models.get("google/nano-banana")
+        for v in model.versions.list():
+            print(v.id)
+        print("===================================================")
+    except Exception as e:
+        print("Ошибка при получении версий Nano Banana:", e)
+    # ===== Конец аналитического блока =====
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
