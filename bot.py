@@ -116,6 +116,11 @@ async def generate_image(prompt: str, images: list[str] = None):
         return None
     except Exception as e:
         logger.error(f"Ошибка генерации: {e}")
+        if hasattr(e, "response") and hasattr(e.response, "json"):
+            try:
+                logger.error(f"Ответ Replicate: {e.response.json()}")
+            except Exception as parse_error:
+                logger.error(f"Не удалось разобрать ответ Replicate: {parse_error}")
         return None
 
 
