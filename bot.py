@@ -108,7 +108,7 @@ async def generate_image(prompt: str, images: list[str] = None):
         if images:
             input_data["image"] = images
         output = replicate_client.run(
-            "google/nano-banana:5de8913db93a00e6d5e37b4f9e17f4394a0c5a52e4eaa7dd79e7abf5ac2f27b5",
+            "google/nano-banana:684b7b03f5caa2cb45a35b444efcae8362e0684d014a7b0487207c4c1879dfff",
             input=input_data,
         )
         if isinstance(output, list) and len(output) > 0:
@@ -294,17 +294,6 @@ def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
 
-    # ===== Аналитический блок: вывести доступные версии nano-banana при старте =====
-    try:
-        print("=== Доступные версии модели google/nano-banana ===")
-        model = replicate_client.models.get("google/nano-banana")
-        for v in model.versions.list():
-            print(v.id)
-        print("===================================================")
-    except Exception as e:
-        print("Ошибка при получении версий Nano Banana:", e)
-    # ===== Конец аналитического блока =====
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
@@ -324,6 +313,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
