@@ -104,23 +104,23 @@ def main_menu():
 # Генерация изображения через Replicate
 async def generate_image(prompt: str, images: list[str] = None):
     try:
-        input_data = {"prompt": prompt}
+        input_data = {
+            "prompt": prompt,
+            "output_format": "jpg",  # формат результата
+        }
         if images:
-            input_data["image"] = images
+            input_data["images"] = images  # теперь список картинок
+
         output = replicate_client.run(
-            "google/nano-banana:684b7b03f5caa2cb45a35b444efcae8362e0684d014a7b0487207c4c1879dfff",
+            "google/nano-banana",  # без UUID
             input=input_data,
         )
+
         if isinstance(output, list) and len(output) > 0:
             return output[0]
         return None
     except Exception as e:
         logger.error(f"Ошибка генерации: {e}")
-        if hasattr(e, "response") and hasattr(e.response, "json"):
-            try:
-                logger.error(f"Ответ Replicate: {e.response.json()}")
-            except Exception as parse_error:
-                logger.error(f"Не удалось разобрать ответ Replicate: {parse_error}")
         return None
 
 
