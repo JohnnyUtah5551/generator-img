@@ -109,7 +109,7 @@ async def generate_image(prompt: str, images: list[str] = None):
             "output_format": "jpg",  # формат результата
         }
         if images:
-            input_data["images"] = images  # теперь список картинок
+            input_data["input_images"] = images  # теперь список картинок
 
         output = replicate_client.run(
             "google/nano-banana",  # без UUID
