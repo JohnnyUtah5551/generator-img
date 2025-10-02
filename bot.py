@@ -143,7 +143,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик меню
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    try:
     await query.answer()
+except Exception as e:
+    if "Query is too old" in str(e):
+        logger.warning("Просроченный callback query — можно игнорировать")
+    else:
+        logger.error(f"Ошибка при ответе на callback: {e}")
 
     if query.data == "generate":
         await query.message.reply_text(
