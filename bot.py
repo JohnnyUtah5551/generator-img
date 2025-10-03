@@ -106,7 +106,7 @@ async def generate_image(prompt: str, image_url: str = None):
     try:
         input_data = {"prompt": prompt}
         if image_url:
-            input_data["image"] = image_url
+            input_data["image_input"] = images
 
         output = replicate_client.run(
             "google/nano-banana",
