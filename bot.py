@@ -102,22 +102,21 @@ def main_menu():
 
 
 # Генерация изображения через Replicate
-async def generate_image(prompt: str, images: list[str] = None):
+async def generate_image(prompt: str, image_url: str = None):
     try:
-        input_data = {
-            "prompt": prompt,
-            "output_format": "jpg",  # формат результата
-        }
-        if images:
-            input_data["input_images"] = images  # теперь список картинок
+        input_data = {"prompt": prompt}
+        if image_url:
+            input_data["image"] = image_url
 
         output = replicate_client.run(
-            "google/nano-banana",  # без UUID
+            "google/nano-banana",
             input=input_data,
         )
 
-        if isinstance(output, list) and len(output) > 0:
-            return output[0]
+        if output:
+            if isinstance(output, list) and len(output) > 0:
+                return output[0]
+            return output
         return None
     except Exception as e:
         logger.error(f"Ошибка генерации: {e}")
