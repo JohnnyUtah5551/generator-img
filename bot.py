@@ -102,12 +102,11 @@ def main_menu():
 
 
 # Генерация изображения через Replicate
-async def generate_image(prompt: str, image_urls: list | None = None):
+async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
-        if image_urls:
-            # Передаем список до 4 изображений
-            input_data["image_input"] = image_urls[:4]
+        if images:
+            input_data["image_input"] = images  # список URL
 
         output = replicate_client.run(
             "google/nano-banana",
@@ -116,8 +115,8 @@ async def generate_image(prompt: str, image_urls: list | None = None):
 
         if output:
             if isinstance(output, list) and len(output) > 0:
-                return str(output[0])
-            return str(output)
+                return output[0]
+            return output
         return None
 
     except Exception as e:
@@ -252,15 +251,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⏳ Генерация изображения...")
 
-    # Получаем все присланные фото
     images = []
     if update.message.photo:
-        for photo in update.message.photo[-4:]:  # берём до 4 фото (от мелких к большим)
-            file = await photo.get_file()
-            # Формируем полный HTTP URL для Telegram файла
-            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}"
-            images.append(file_url)
+        # до 4 изображений, формируем публичные URL
+        for file in update.message.photo[:4]:
+            f = await file.get_file()
+            images.append(f"https://api.telegram.org/file/bot{TOKEN}/{f.file_path}")
 
+    # Передаем промт и список URL (если есть)
     result = await generate_image(prompt, images if images else None)
 
     if result and not isinstance(result, dict):
@@ -277,9 +275,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     else:
-        # Если вернулась ошибка
-        await update.message.reply_text(result.get("error") if isinstance(result, dict) else "⚠️ Извините, генерация временно недоступна.")
-
+        error_text = result.get("error") if isinstance(result, dict) else "⚠️ Извините, генерация временно недоступна."
+        await update.message.reply_text(error_text)
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
