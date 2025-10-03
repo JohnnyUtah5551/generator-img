@@ -253,17 +253,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     images = []
     if update.message.photo:
-        # до 4 изображений, формируем публичные URL
-        for file in update.message.photo[:4]:
-            f = await file.get_file()
-            images.append(f"https://api.telegram.org/file/bot{TOKEN}/{f.file_path}")
+        # Берем все фото (до 4) и получаем URL через Telegram API
+        for photo in update.message.photo[-4:]:
+            file = await photo.get_file()
+            images.append(file.file_path)
 
-    # Передаем промт и список URL (если есть)
+    # Генерация через Replicate
     result = await generate_image(prompt, images if images else None)
 
-    if result and not isinstance(result, dict):
+    if result:
         await update.message.reply_photo(result)
-        update_balance(user_id, -1, "spend")
+        update_balance(user_id, -1, "spend")  # списываем 1 генерацию
+
+        # Кнопки для повторной генерации или завершения
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
@@ -275,8 +277,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     else:
-        error_text = result.get("error") if isinstance(result, dict) else "⚠️ Извините, генерация временно недоступна."
-        await update.message.reply_text(error_text)
+        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
