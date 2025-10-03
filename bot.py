@@ -118,9 +118,17 @@ async def generate_image(prompt: str, image_url: str = None):
                 return output[0]
             return output
         return None
+
     except Exception as e:
-        logger.error(f"Ошибка генерации: {e}")
-        return None
+        error_msg = str(e)
+        logger.error(f"Ошибка генерации: {error_msg}")
+
+        if "insufficient credit" in error_msg.lower():
+            return {"error": "Недостаточно генераций. Пополните баланс."}
+        elif "flagged as sensitive" in error_msg.lower():
+            return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку."}
+        else:
+            return {"error": "Извините, генерация временно недоступна."}
 
 
 # Старт
