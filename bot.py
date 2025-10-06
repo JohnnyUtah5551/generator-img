@@ -264,14 +264,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
     images_inputs = []
-    if update.message.photo:
-        for photo in update.message.photo[-4:]:
-            file = await photo.get_file()
-            buf = io.BytesIO()
-            await file.download_to_memory(out=buf)
-            buf.seek(0)
-            encoded = base64.b64encode(buf.read()).decode()
-            images_inputs.append(f"data:image/jpeg;base64,{encoded}")
+if update.message.photo:
+    for photo in update.message.photo[-4:]:
+        file = await photo.get_file()
+        buf = io.BytesIO()
+        await file.download_to_memory(out=buf)
+        buf.seek(0)
+        images_inputs.append(buf.read())  # сохраняем просто bytes
 
     # Генерация через Replicate
     result = await generate_image(prompt, images_inputs if images_inputs else None)
@@ -317,7 +316,9 @@ async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
         if images:
-            input_data["image_inputs"] = images  # уже готовые base64-строки
+    input_data["image_inputs"] = [
+        f"data:image/jpeg;base64,{base64.b64encode(img).decode()}" for img in images
+    ]
 
         output = replicate_client.run(
             "google/nano-banana",
