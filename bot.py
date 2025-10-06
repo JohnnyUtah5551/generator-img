@@ -197,8 +197,8 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data in package_map:
         gens, stars = package_map[query.data]
 
-        # Вставьте сюда ваш provider_token для Telegram Stars
-        provider_token = os.getenv("TELEGRAM_STARS_TOKEN")
+        # provider_token оставляем пустым для цифровых товаров
+        provider_token = os.getenv("TELEGRAM_STARS_TOKEN", "")
 
         await query.message.reply_invoice(
             title="Покупка генераций",
@@ -209,6 +209,14 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
             start_parameter=f"stars-payment-{gens}",
         )
+
+
+# Обработка pre_checkout_query (обязательный шаг для Telegram Stars)
+from telegram import PreCheckoutQuery
+
+async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query: PreCheckoutQuery = update.pre_checkout_query
+    await query.answer(ok=True)  # подтверждаем, что все ок для оплаты
 
 
 # Обработка успешной оплаты
@@ -321,10 +329,17 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
+
+    # Меню
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
     app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
     app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
+
+    # Оплата
+    app.add_handler(MessageHandler(filters.PRE_CHECKOUT, pre_checkout_handler))  # новый обработчик
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+    # Сообщения с текстом / фото
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
     port = int(os.environ.get("PORT", 5000))
