@@ -322,6 +322,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+from telegram.ext import PreCheckoutQueryHandler, MessageHandler, filters
+
 # Запуск приложения
 def main():
     init_db()
@@ -336,7 +338,7 @@ def main():
     app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
 
     # Оплата
-    app.add_handler(MessageHandler(filters.PRE_CHECKOUT, pre_checkout_handler))  # новый обработчик
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))  # заменили filters.PRE_CHECKOUT
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
     # Сообщения с текстом / фото
