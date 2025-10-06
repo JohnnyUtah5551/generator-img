@@ -269,16 +269,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
 images_inputs = []
-captions = []
-
 if update.message.photo:
     # берем до 4 фото
     for photo in update.message.photo[-4:]:
-        file = await photo.get_file()
+        file = await photo.get_file()  # <- await здесь корректно, внутри async функции
         buf = io.BytesIO()
         await file.download_to_memory(out=buf)
         buf.seek(0)
         images_inputs.append(buf.read())
+
     # если есть подпись — прикрепляем к prompt, чтобы модель знала, что делать с фото
     if update.message.caption:
         prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
