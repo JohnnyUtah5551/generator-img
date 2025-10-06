@@ -183,7 +183,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(help_text, reply_markup=main_menu())
 
 
-# Покупки
+# Покупки с Telegram Stars
 async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -196,14 +196,18 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data in package_map:
         gens, stars = package_map[query.data]
+
+        # Вставьте сюда ваш provider_token для Telegram Stars
+        provider_token = os.getenv("TELEGRAM_STARS_TOKEN")
+
         await query.message.reply_invoice(
             title="Покупка генераций",
             description=f"{gens} генераций для нейросети",
-            payload=f"buy_{gens}",
-            provider_token="",
+            payload=query.data,  # payload должен совпадать с ключом в gens_map
+            provider_token=provider_token,
             currency="XTR",
             prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
-            start_parameter="stars-payment",
+            start_parameter=f"stars-payment-{gens}",
         )
 
 
