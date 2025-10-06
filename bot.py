@@ -267,6 +267,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Обработка фото --- #
     images_inputs = []
     if update.message.photo:
+        # Берем только самое крупное фото (последнее в списке)
         photo = update.message.photo[-1]
         file = await photo.get_file()
         images_inputs.append(file.file_path)
@@ -297,19 +298,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
         return
 
-if user_id != ADMIN_ID:
-    update_balance(user_id, -1, "spend")
+    # --- Списание генерации --- #
+    if user_id != ADMIN_ID:
+        update_balance(user_id, -1, "spend")
 
-keyboard = [
-    [
-        InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-        InlineKeyboardButton("✅ Завершить", callback_data="end"),
+    # --- Кнопки для повторной генерации / завершения --- #
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+            InlineKeyboardButton("✅ Завершить", callback_data="end"),
+        ]
     ]
-]
-await update.message.reply_text(
-    "Напишите в чат, если нужно изменить что-то ещё.",
-    reply_markup=InlineKeyboardMarkup(keyboard),
-)
+    await update.message.reply_text(
+        "Напишите в чат, если нужно изменить что-то ещё.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
 
             
 # Завершение сессии
