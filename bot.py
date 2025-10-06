@@ -265,8 +265,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    images_inputs = []  # <- здесь
-    if update.message.photo:  # <- и этот блок тоже внутри функции
+    images_inputs = []
+    if update.message.photo:
         for photo in update.message.photo[-4:]:
             file = await photo.get_file()
             buf = io.BytesIO()
@@ -274,7 +274,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buf.seek(0)
             images_inputs.append(buf.read())
 
-    
     # Генерация через Replicate
     result = await generate_image(prompt, images_inputs if images_inputs else None)
 
@@ -313,37 +312,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-
-# --- Вынесенная функция генерации (НЕ внутри handle_message) ---
-async def generate_image(prompt: str, images: list = None):
-    try:
-        input_data = {"prompt": prompt}
-        if images:
-            input_data["image_inputs"] = [
-                f"data:image/jpeg;base64,{base64.b64encode(img).decode()}" for img in images
-            ]
-
-        output = replicate_client.run(
-            "google/nano-banana",
-            input=input_data,
-        )
-
-        if output:
-            if isinstance(output, list) and len(output) > 0:
-                return output[0]
-            return output
-        return None
-
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Ошибка генерации: {error_msg}")
-
-        if "insufficient credit" in error_msg.lower():
-            return {"error": "Недостаточно генераций. Пополните баланс."}
-        elif "flagged as sensitive" in error_msg.lower():
-            return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку."}
-        else:
-            return {"error": "Извините, генерация временно недоступна."}
             
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
