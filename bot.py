@@ -234,11 +234,18 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 
 # Сообщения с текстом / фото
+import io
+import httpx
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+ADMIN_ID = 123456789  # <-- твой Telegram ID
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     balance = get_user(user_id)
 
-    if balance <= 0:
+    # Пропуск проверки баланса для админа
+    if user_id != ADMIN_ID and balance <= 0:
         await update.message.reply_text(
             "⚠️ У вас закончились генерации. Пополните баланс через меню.",
             reply_markup=main_menu()
@@ -250,22 +257,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
         return
 
-    await update.message.reply_text("⏳ Генерация изображения...")
+    progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    images = []
+    images_bytes = []
     if update.message.photo:
         # Берем до 4 фото
         for photo in update.message.photo[-4:]:
             file = await photo.get_file()
-            # используем прямой URL Telegram
-            images.append(file.file_path)
+            buf = io.BytesIO()
+            await file.download_to_memory(out=buf)
+            buf.seek(0)
+            images_bytes.append(buf.read())
 
     # Генерация через Replicate
-    result = await generate_image(prompt, images if images else None)
+    result = await generate_image(prompt, images_bytes if images_bytes else None)
 
     if result:
-        await update.message.reply_photo(result)
-        update_balance(user_id, -1, "spend")  # списываем 1 генерацию
+        await progress_msg.delete()
+
+        # Если result — это список URL, скачиваем первый
+        if isinstance(result, list):
+            async with httpx.AsyncClient() as client:
+                img_bytes = (await client.get(result[0])).content
+            await update.message.reply_photo(img_bytes)
+        else:
+            await update.message.reply_photo(result)
+
+        # Списываем 1 генерацию только для обычных пользователей
+        if user_id != ADMIN_ID:
+            update_balance(user_id, -1, "spend")
 
         keyboard = [
             [
@@ -278,6 +298,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     else:
+        await progress_msg.delete()
         await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
 # Завершение сессии
