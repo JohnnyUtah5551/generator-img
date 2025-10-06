@@ -239,6 +239,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Сообщения с текстом / фото
 import io
+import base64
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -263,41 +264,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    images_bytes = []
+    images_inputs = []
     if update.message.photo:
-        # Берем до 4 фото
+        # Берем до 4 фото и конвертируем в base64
         for photo in update.message.photo[-4:]:
             file = await photo.get_file()
             buf = io.BytesIO()
             await file.download_to_memory(out=buf)
             buf.seek(0)
-            images_bytes.append(buf.read())
+            encoded = base64.b64encode(buf.read()).decode()
+            images_inputs.append(f"data:image/jpeg;base64,{encoded}")
 
     # Генерация через Replicate
-    result = await generate_image(prompt, images_bytes if images_bytes else None)
-
-    await progress_msg.delete()
+    result = await generate_image(prompt, images_inputs if images_inputs else None)
 
     if result:
+        await progress_msg.delete()
+
         # Если result — это список URL, скачиваем первый
         if isinstance(result, list):
             async with httpx.AsyncClient() as client:
                 img_bytes = (await client.get(result[0])).content
             await update.message.reply_photo(img_bytes)
         else:
-            # Если result — base64, декодируем
-            if isinstance(result, str) and result.startswith("data:image"):
-                header, encoded = result.split(",", 1)
-                img_bytes = base64.b64decode(encoded)
-                await update.message.reply_photo(img_bytes)
-            else:
-                await update.message.reply_photo(result)
+            await update.message.reply_photo(result)
 
         # Списываем 1 генерацию только для обычных пользователей
         if user_id != ADMIN_ID:
             update_balance(user_id, -1, "spend")
 
-        # ❗ Кнопки «Повторить» и «Завершить» сохраняем
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
@@ -309,6 +304,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     else:
+        await progress_msg.delete()
         await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
 # Завершение сессии
