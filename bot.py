@@ -264,31 +264,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    # --- ОБРАБОТКА ФОТО --- #
+    # --- Обработка фото --- #
     images_inputs = []
     if update.message.photo:
-        # Берем только самое крупное фото (последнее в списке)
         photo = update.message.photo[-1]
-        file = await photo.get_file()  # <- теперь await внутри async
-        images_inputs.append(file.file_path)  # передаем URL вместо байто
+        file = await photo.get_file()
+        images_inputs.append(file.file_path)
+        if update.message.caption:
+            prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
 
+    # --- Генерация изображения --- #
+    result = await generate_image(prompt, images_inputs[0] if images_inputs else None)
 
-    # Генерация через Replicate
-result = await generate_image(prompt, images_inputs[0] if images_inputs else None)
+    await progress_msg.delete()
 
-await progress_msg.delete()
+    if isinstance(result, dict) and "error" in result:
+        await update.message.reply_text(result["error"])
+        return
 
-if isinstance(result, dict) and "error" in result:
-    await update.message.reply_text(result["error"])
-    return
+    if isinstance(result, list):
+        url = result[0]
+    elif isinstance(result, str):
+        url = result
+    else:
+        url = None
 
-if result:  # result уже URL
-    async with httpx.AsyncClient() as client:
-        img_bytes = (await client.get(result)).content
-    await update.message.reply_photo(img_bytes)
-else:
-    await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
-    return
+    if url:
+        async with httpx.AsyncClient() as client:
+            img_bytes = (await client.get(url)).content
+        await update.message.reply_photo(img_bytes)
+    else:
+        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+        return
 
 if user_id != ADMIN_ID:
     update_balance(user_id, -1, "spend")
