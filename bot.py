@@ -262,8 +262,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_image(prompt, images if images else None)
 
     if result:
-        await update.message.reply_photo(result)
+    await update.message.reply_photo(result)
+
+    # ⚙️ Бесплатные генерации только для админа
+    if user_id != ADMIN_ID:
         update_balance(user_id, -1, "spend")  # списываем 1 генерацию
+    else:
+        logger.info(f"Админ {user_id} использовал бесплатную генерацию (баланс не изменён).")
 
         # Кнопки для повторной генерации или завершения
         keyboard = [
