@@ -243,14 +243,17 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 import io
 import base64
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ContextTypes
 
-ADMIN_ID = 641377565  # <-- твой Telegram ID
+# ADMIN_ID уже определяется в начале файла через переменные окружения
+# ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    balance = get_user(user_id)
+    balance = get_user(user_id)  # получаем баланс пользователя
 
+    # Проверка баланса только для обычных пользователей
     if user_id != ADMIN_ID and balance <= 0:
         await update.message.reply_text(
             "⚠️ У вас закончились генерации. Пополните баланс через меню.",
