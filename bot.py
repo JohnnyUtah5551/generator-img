@@ -251,9 +251,8 @@ from telegram.ext import ContextTypes
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    balance = get_user(user_id)  # получаем баланс пользователя
+    balance = get_user(user_id)
 
-    # Проверка баланса только для обычных пользователей
     if user_id != ADMIN_ID and balance <= 0:
         await update.message.reply_text(
             "⚠️ У вас закончились генерации. Пополните баланс через меню.",
@@ -268,19 +267,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-images_inputs = []
-if update.message.photo:
-    # берем до 4 фото
-    for photo in update.message.photo[-4:]:
-        file = await photo.get_file()  # <- await здесь корректно, внутри async функции
-        buf = io.BytesIO()
-        await file.download_to_memory(out=buf)
-        buf.seek(0)
-        images_inputs.append(buf.read())
+    images_inputs = []  # <- теперь внутри функции
+    if update.message.photo:
+        for photo in update.message.photo[-4:]:
+            file = await photo.get_file()  # <- await внутри async функции
+            buf = io.BytesIO()
+            await file.download_to_memory(out=buf)
+            buf.seek(0)
+            images_inputs.append(buf.read())
 
-    # если есть подпись — прикрепляем к prompt, чтобы модель знала, что делать с фото
-    if update.message.caption:
-        prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
+        if update.message.caption:
+            prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
 
 
     # Генерация через Replicate
