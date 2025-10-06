@@ -102,15 +102,18 @@ def main_menu():
 
 
 # Генерация изображения через Replicate
+# Генерация изображения через Replicate
 import base64
 
 async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
+        
         if images:
             # Конвертируем bytes в base64, чтобы Replicate мог принять
             input_data["image_inputs"] = [
-                f"data:image/jpeg;base64,{base64.b64encode(img).decode()}" for img in images
+                f"data:image/jpeg;base64,{base64.b64encode(img).decode()}"
+                for img in images
             ]
 
         output = replicate_client.run(
