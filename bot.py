@@ -253,14 +253,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Генерация изображения...")
 
     images = []
+    local_paths = []
     if update.message.photo:
-        # Берем все фото (до 4) и формируем публичные URL для Nano Banana
+        # Берем до 4 фото
         for photo in update.message.photo[-4:]:
             file = await photo.get_file()
-            images.append(f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}")
+            # сохраняем временно в /tmp
+            local_path = f"/tmp/{file.file_id}.jpg"
+            await file.download_to_drive(local_path)
+            local_paths.append(local_path)
+            # используем локальный путь как URL для Replicate
+            images.append(local_path)
 
     # Генерация через Replicate
     result = await generate_image(prompt, images if images else None)
+
+    # удаляем все временные файлы после генерации
+    for path in local_paths:
+        if os.path.exists(path):
+            os.remove(path)
 
     if result:
         await update.message.reply_photo(result)
