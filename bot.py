@@ -242,52 +242,52 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 # Сообщения с текстом / фото
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверка баланса с учётом админа
-user_id = update.effective_user.id
-balance = get_user(user_id)
+    user_id = update.effective_user.id
+    balance = get_user(user_id)
 
-# Если админ — пропускаем проверку баланса
-is_admin = user_id == ADMIN_ID
-if not is_admin and balance <= 0:
-    await update.message.reply_text(
-        "⚠️ У вас закончились генерации. Пополните баланс через меню.",
-        reply_markup=main_menu()
-    )
-    return
+    # Если админ — пропускаем проверку баланса
+    is_admin = user_id == ADMIN_ID
+    if not is_admin and balance <= 0:
+        await update.message.reply_text(
+            "⚠️ У вас закончились генерации. Пополните баланс через меню.",
+            reply_markup=main_menu()
+        )
+        return
 
-prompt = update.message.caption or update.message.text
-if not prompt:
-    await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
-    return
+    prompt = update.message.caption or update.message.text
+    if not prompt:
+        await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
+        return
 
-await update.message.reply_text("⏳ Генерация изображения...")
+    await update.message.reply_text("⏳ Генерация изображения...")
 
-images = []
-if update.message.photo:
-    for photo in update.message.photo[-4:]:
-        file = await photo.get_file()
-        images.append(file.file_path)
+    images = []
+    if update.message.photo:
+        for photo in update.message.photo[-4:]:
+            file = await photo.get_file()
+            images.append(file.file_path)
 
-result = await generate_image(prompt, images if images else None)
+    result = await generate_image(prompt, images if images else None)
 
-if result:
-    await update.message.reply_photo(result)
-    
-    # Списание генераций только для обычных пользователей
-    if not is_admin:
-        update_balance(user_id, -1, "spend")
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-            InlineKeyboardButton("✅ Завершить", callback_data="end"),
+    if result:
+        await update.message.reply_photo(result)
+        
+        # Списание генераций только для обычных пользователей
+        if not is_admin:
+            update_balance(user_id, -1, "spend")
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+                InlineKeyboardButton("✅ Завершить", callback_data="end"),
+            ]
         ]
-    ]
-    await update.message.reply_text(
-        "Напишите в чат, если нужно изменить что-то ещё.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-else:
-    await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+        await update.message.reply_text(
+            "Напишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
 
 # Завершение сессии
