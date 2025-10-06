@@ -101,15 +101,13 @@ def main_menu():
     return InlineKeyboardMarkup(keyboard)
 
 
-# Генерация изображения через Replicate
-import base64
-
+# Генерация изображения через Replicate с поддержкой нескольких фото
 async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
         
         if images:
-            # Конвертируем bytes в base64, чтобы Replicate мог принять
+            # Передаем все изображения как массив image_inputs (каждое в base64)
             input_data["image_inputs"] = [
                 f"data:image/jpeg;base64,{base64.b64encode(img).decode()}"
                 for img in images
@@ -120,11 +118,13 @@ async def generate_image(prompt: str, images: list = None):
             input=input_data,
         )
 
-        if output:
-            if isinstance(output, list) and len(output) > 0:
-                return output[0]
+        # всегда возвращаем строку с URL, даже если output — список
+        if isinstance(output, list) and len(output) > 0:
+            return output[0]
+        elif isinstance(output, str):
             return output
-        return None
+        else:
+            return None
 
     except Exception as e:
         error_msg = str(e)
@@ -268,14 +268,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    images_inputs = []
-    if update.message.photo:
-        for photo in update.message.photo[-4:]:
-            file = await photo.get_file()
-            buf = io.BytesIO()
-            await file.download_to_memory(out=buf)
-            buf.seek(0)
-            images_inputs.append(buf.read())
+images_inputs = []
+captions = []
+
+if update.message.photo:
+    # берем до 4 фото
+    for photo in update.message.photo[-4:]:
+        file = await photo.get_file()
+        buf = io.BytesIO()
+        await file.download_to_memory(out=buf)
+        buf.seek(0)
+        images_inputs.append(buf.read())
+    # если есть подпись — прикрепляем к prompt, чтобы модель знала, что делать с фото
+    if update.message.caption:
+        prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
+
 
     # Генерация через Replicate
     result = await generate_image(prompt, images_inputs if images_inputs else None)
