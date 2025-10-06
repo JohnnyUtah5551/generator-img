@@ -206,7 +206,7 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title="Покупка генераций",
             description=f"{gens} генераций для нейросети",
             payload=f"buy_{gens}",
-            provider_token="",
+            provider_token="stars",  # ⚡ вот ключевое изменение
             currency="XTR",
             prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
             start_parameter="stars-payment",
