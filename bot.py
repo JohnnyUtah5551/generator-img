@@ -254,10 +254,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     images = []
     if update.message.photo:
-        # Берем все фото (до 4) и получаем URL через Telegram API
+        # Берем все фото (до 4) и формируем публичные URL для Nano Banana
         for photo in update.message.photo[-4:]:
             file = await photo.get_file()
-            images.append(file.file_path)
+            images.append(f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}")
 
     # Генерация через Replicate
     result = await generate_image(prompt, images if images else None)
