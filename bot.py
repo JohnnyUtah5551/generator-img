@@ -135,8 +135,9 @@ async def generate_image(prompt: str, images: list = None):
             return {"error": "Извините, генерация временно недоступна."}
 
 
-# Старт
+# Старт — добавляем лог для проверки
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"/start от пользователя {update.effective_user.id}")
     user_id = update.effective_user.id
     get_user(user_id)
 
@@ -149,6 +150,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(text, reply_markup=main_menu())
+
+
+# Переписанный main — рабочий webhook
+def main():
+    # Инициализация базы данных до создания приложения
+    init_db()
+
+    app = Application.builder().token(TOKEN).build()
+
+    # Команды
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", stats))
+
+    # CallbackQueryHandler для меню
+    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
+    app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
+    app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
+
+    # Платежи
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+    # Сообщения с текстом/фото
+    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+
+    # Порт и webhook
+    port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Запуск бота на порту {port}, webhook {RENDER_URL}/{TOKEN}")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TOKEN,
+        webhook_url=f"{RENDER_URL}/{TOKEN}"
+    )
+
+
+if __name__ == "__main__":
+    main()
 
 
 # Обработчик меню
