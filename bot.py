@@ -264,15 +264,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    images_inputs = []
+images_inputs = []
 if update.message.photo:
     # Берем только самое крупное фото (последнее в списке)
     photo = update.message.photo[-1]
     file = await photo.get_file()
     images_inputs.append(file.file_path)  # передаем URL вместо байтов
 
-        if update.message.caption:
-            prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
+if update.message.caption:
+    prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
+
 
 
     # Генерация через Replicate
