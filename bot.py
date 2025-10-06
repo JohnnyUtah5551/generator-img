@@ -105,20 +105,17 @@ def main_menu():
 async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
-        
-        if images:
-            # Передаем все изображения как массив image_inputs (каждое в base64)
-            input_data["image_inputs"] = [
-                f"data:image/jpeg;base64,{base64.b64encode(img).decode()}"
-                for img in images
-            ]
+
+        # если есть хотя бы одно изображение, берем только первое
+        if images and len(images) > 0:
+            # images — это URL Telegram файла
+            input_data["image_input"] = images[0]
 
         output = replicate_client.run(
             "google/nano-banana",
             input=input_data,
         )
 
-        # всегда возвращаем строку с URL, даже если output — список
         if isinstance(output, list) and len(output) > 0:
             return output[0]
         elif isinstance(output, str):
@@ -267,56 +264,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress_msg = await update.message.reply_text("⏳ Генерация изображения...")
 
-    images_inputs = []  # <- теперь внутри функции
-    if update.message.photo:
-        for photo in update.message.photo[-4:]:
-            file = await photo.get_file()  # <- await внутри async функции
-            buf = io.BytesIO()
-            await file.download_to_memory(out=buf)
-            buf.seek(0)
-            images_inputs.append(buf.read())
+    images_inputs = []
+if update.message.photo:
+    # Берем только самое крупное фото (последнее в списке)
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+    images_inputs.append(file.file_path)  # передаем URL вместо байтов
 
         if update.message.caption:
             prompt = f"{update.message.caption}\nОбработай все прикрепленные изображения в соответствии с описанием."
 
 
     # Генерация через Replicate
-    result = await generate_image(prompt, images_inputs if images_inputs else None)
+result = await generate_image(prompt, images_inputs[0] if images_inputs else None)
 
-    await progress_msg.delete()
+await progress_msg.delete()
 
-    if isinstance(result, dict) and "error" in result:
-        await update.message.reply_text(result["error"])
-        return
+if isinstance(result, dict) and "error" in result:
+    await update.message.reply_text(result["error"])
+    return
 
-    if isinstance(result, list):
-        url = result[0]
-    elif isinstance(result, str):
-        url = result
-    else:
-        url = None
+if result:  # result уже URL
+    async with httpx.AsyncClient() as client:
+        img_bytes = (await client.get(result)).content
+    await update.message.reply_photo(img_bytes)
+else:
+    await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+    return
 
-    if url:
-        async with httpx.AsyncClient() as client:
-            img_bytes = (await client.get(url)).content
-        await update.message.reply_photo(img_bytes)
-    else:
-        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
-        return
+if user_id != ADMIN_ID:
+    update_balance(user_id, -1, "spend")
 
-    if user_id != ADMIN_ID:
-        update_balance(user_id, -1, "spend")
-
-    keyboard = [
-        [
-            InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-            InlineKeyboardButton("✅ Завершить", callback_data="end"),
-        ]
+keyboard = [
+    [
+        InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+        InlineKeyboardButton("✅ Завершить", callback_data="end"),
     ]
-    await update.message.reply_text(
-        "Напишите в чат, если нужно изменить что-то ещё.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+]
+await update.message.reply_text(
+    "Напишите в чат, если нужно изменить что-то ещё.",
+    reply_markup=InlineKeyboardMarkup(keyboard),
+)
 
             
 # Завершение сессии
