@@ -273,6 +273,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             encoded = base64.b64encode(buf.read()).decode()
             images_inputs.append(f"data:image/jpeg;base64,{encoded}")
 
+    # Генерация через Replicate
     result = await generate_image(prompt, images_inputs if images_inputs else None)
 
     await progress_msg.delete()
@@ -310,8 +311,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-    # Генерация через Replicate
-    async def generate_image(prompt: str, images: list = None):
+
+# --- Вынесенная функция генерации (НЕ внутри handle_message) ---
+async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
         if images:
@@ -338,7 +340,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку."}
         else:
             return {"error": "Извините, генерация временно недоступна."}
-
+            
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
