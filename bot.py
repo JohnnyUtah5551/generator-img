@@ -106,7 +106,8 @@ async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
         if images:
-            input_data["image_input"] = images  # список URL
+            # Nano Banana ожидает список изображений в ключе "image_inputs"
+            input_data["image_inputs"] = images  # список URL (до 4)
 
         output = replicate_client.run(
             "google/nano-banana",
@@ -262,15 +263,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await generate_image(prompt, images if images else None)
 
     if result:
-    await update.message.reply_photo(result)
-
-    # ⚙️ Бесплатные генерации только для админа
-    if user_id != ADMIN_ID:
+        await update.message.reply_photo(result)
         update_balance(user_id, -1, "spend")  # списываем 1 генерацию
-    else:
-        logger.info(f"Админ {user_id} использовал бесплатную генерацию (баланс не изменён).")
 
-        # Кнопки для повторной генерации или завершения
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
