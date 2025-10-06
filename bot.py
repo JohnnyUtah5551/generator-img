@@ -102,11 +102,11 @@ def main_menu():
 
 
 # Генерация изображения через Replicate
-async def generate_image(prompt: str, image_url: str = None):
+async def generate_image(prompt: str, images: list = None):
     try:
         input_data = {"prompt": prompt}
-        if image_url:
-            input_data["image"] = image_url
+        if images:
+            input_data["image_input"] = images  # список URL
 
         output = replicate_client.run(
             "google/nano-banana",
@@ -119,8 +119,14 @@ async def generate_image(prompt: str, image_url: str = None):
             return output
         return None
     except Exception as e:
-        logger.error(f"Ошибка генерации: {e}")
-        return None
+        error_msg = str(e)
+        logger.error(f"Ошибка генерации: {error_msg}")
+        if "insufficient credit" in error_msg.lower():
+            return {"error": "Недостаточно генераций. Пополните баланс."}
+        elif "flagged as sensitive" in error_msg.lower():
+            return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку."}
+        else:
+            return {"error": "Извините, генерация временно недоступна."}
 
 
 # Старт
@@ -157,11 +163,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Отправьте от 1 до 4 изображений с подписью, что нужно изменить, или напишите текст."
         )
         await query.message.delete()
-
     elif query.data == "balance":
         balance = get_user(query.from_user.id)
         await query.message.reply_text(f"💰 У вас {balance} генераций.", reply_markup=main_menu())
-
     elif query.data == "buy":
         keyboard = [
             [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
@@ -169,7 +173,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("100 генераций — 400⭐", callback_data="buy_100")],
         ]
         await query.message.reply_text("Выберите пакет:", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif query.data == "help":
         help_text = (
             "ℹ️ Чтобы сгенерировать изображение, сначала нажмите кнопку «Сгенерировать».\n\n"
@@ -245,8 +248,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     images = []
     if update.message.photo:
-        file = await update.message.photo[-1].get_file()
-        images.append(file.file_path)
+        for photo in update.message.photo[-4:]:
+            file = await photo.get_file()
+            images.append(file.file_path)
 
     result = await generate_image(prompt, images if images else None)
 
@@ -323,6 +327,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
