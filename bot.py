@@ -342,7 +342,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
     # Сообщения с текстом / фото
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+    app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
 
     port = int(os.environ.get("PORT", 5000))
     app.run_webhook(
