@@ -338,13 +338,13 @@ def main():
     app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
 
     # Оплата
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))  # заменили filters.PRE_CHECKOUT
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
-    # Сообщения с текстом / фото
+    # Сообщения с текстом / фото (исключая команды)
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
 
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", "10000"))
     app.run_webhook(
         listen="0.0.0.0",
         port=port,
