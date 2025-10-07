@@ -197,32 +197,33 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data in package_map:
         gens, stars = package_map[query.data]
 
-        # provider_token оставляем пустым для цифровых товаров
-        provider_token = os.getenv("TELEGRAM_STARS_TOKEN", "")
-
-        await query.message.reply_invoice(
+        await context.bot.send_invoice(
+            chat_id=query.from_user.id,
             title="Покупка генераций",
             description=f"{gens} генераций для нейросети",
-            payload=query.data,  # payload должен совпадать с ключом в gens_map
-            provider_token=provider_token,
+            payload=query.data,
+            provider_token="",  # для Telegram Stars оставляем пустым!
             currency="XTR",
             prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
             start_parameter=f"stars-payment-{gens}",
         )
 
 
-# Обработка pre_checkout_query (обязательный шаг для Telegram Stars)
-from telegram import PreCheckoutQuery
-
+# Подтверждение покупки
 async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query: PreCheckoutQuery = update.pre_checkout_query
-    await query.answer(ok=True)  # подтверждаем, что все ок для оплаты
+    await query.answer(ok=True)
 
 
 # Обработка успешной оплаты
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment = update.message.successful_payment
     user_id = update.effective_user.id
+    payload = payment.invoice_payload
+    currency = payment.currency
+    amount = payment.total_amount
+
+    logger.info(f"✅ Successful payment: user={user_id}, payload={payload}, {amount} {currency}")
 
     gens_map = {
         "buy_10": 10,
@@ -230,13 +231,28 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         "buy_100": 100,
     }
 
-    gens = gens_map.get(payment.invoice_payload, 0)
-    if gens > 0:
-        update_balance(user_id, gens, "buy")
-        await update.message.reply_text(
-            f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
-            reply_markup=main_menu()
-        )
+    gens = gens_map.get(payload, 0)
+    if gens <= 0:
+        await update.message.reply_text("⚠️ Ошибка: неизвестный пакет.")
+        return
+
+    # Проверка на повтор
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=? AND type='buy' AND amount=?",
+                (user_id, gens))
+    if cur.fetchone()[0] > 0:
+        logger.warning(f"Повторная оплата от user {user_id}, пропускаем дублирование.")
+        conn.close()
+        return
+    conn.close()
+
+    update_balance(user_id, gens, "buy")
+
+    await update.message.reply_text(
+        f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
+        reply_markup=main_menu()
+    )
 
 
 # Сообщения с текстом / фото
