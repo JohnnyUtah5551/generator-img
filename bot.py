@@ -53,6 +53,7 @@ def init_db():
             user_id INTEGER,
             type TEXT,
             amount INTEGER,
+            payment_id TEXT UNIQUE,
             created_at TEXT
         )
     """)
@@ -248,8 +249,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
     # Записываем транзакцию
     cur.execute(
-        "INSERT INTO transactions (user_id, type, amount, payment_id, timestamp) VALUES (?, ?, ?, ?, datetime('now'))",
-        (user_id, "buy", gens, payment_id)
+    "INSERT INTO transactions (user_id, type, amount, payment_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+    (user_id, "buy", gens, payment_id)
     )
     conn.commit()
     conn.close()
