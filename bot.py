@@ -222,31 +222,39 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     payload = payment.invoice_payload
     currency = payment.currency
     amount = payment.total_amount
+    payment_id = payment.telegram_payment_charge_id  # уникальный ID транзакции
 
-    logger.info(f"✅ Successful payment: user={user_id}, payload={payload}, {amount} {currency}")
+    logger.info(f"✅ Successful payment: user={user_id}, payload={payload}, {amount} {currency}, id={payment_id}")
 
     gens_map = {
         "buy_10": 10,
         "buy_50": 50,
         "buy_100": 100,
     }
-
     gens = gens_map.get(payload, 0)
     if gens <= 0:
         await update.message.reply_text("⚠️ Ошибка: неизвестный пакет.")
         return
 
-    # Проверка на повтор
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id=? AND type='buy' AND amount=?",
-                (user_id, gens))
+
+    # Проверяем, не был ли уже обработан этот платеж
+    cur.execute("SELECT COUNT(*) FROM transactions WHERE payment_id=?", (payment_id,))
     if cur.fetchone()[0] > 0:
-        logger.warning(f"Повторная оплата от user {user_id}, пропускаем дублирование.")
+        logger.warning(f"Повторная оплата {payment_id} от user {user_id}, пропускаем дублирование.")
         conn.close()
         return
+
+    # Записываем транзакцию
+    cur.execute(
+        "INSERT INTO transactions (user_id, type, amount, payment_id, timestamp) VALUES (?, ?, ?, ?, datetime('now'))",
+        (user_id, "buy", gens, payment_id)
+    )
+    conn.commit()
     conn.close()
 
+    # Начисляем генерации
     update_balance(user_id, gens, "buy")
 
     await update.message.reply_text(
