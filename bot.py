@@ -369,6 +369,22 @@ def main():
     # Сообщения с текстом / фото (исключая команды)
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
 
+        # --- Keep Alive ---
+    from apscheduler.schedulers.background import BackgroundScheduler
+    import requests
+
+def keep_alive():
+    try:
+        if RENDER_URL:
+                r = requests.get(RENDER_URL)
+                logger.info(f"Keep-alive ping: {r.status_code}")
+    except Exception as e:
+            logger.warning(f"Keep-alive error: {e}")
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(keep_alive, "interval", minutes=10)
+    scheduler.start()
+
     port = int(os.environ.get("PORT", "10000"))
     app.run_webhook(
         listen="0.0.0.0",
