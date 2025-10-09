@@ -348,12 +348,43 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 from telegram.ext import PreCheckoutQueryHandler, MessageHandler, filters
+from telegram.error import Forbidden, TimedOut, NetworkError
+from apscheduler.schedulers.background import BackgroundScheduler
+import requests
 
-# Запуск приложения
+# --- Глобальный обработчик ошибок ---
+async def error_handler(update, context):
+    try:
+        raise context.error
+    except Forbidden:
+        user_id = update.effective_user.id if update and update.effective_user else "неизвестно"
+        logger.warning(f"⚠️ Пользователь {user_id} заблокировал бота.")
+    except (TimedOut, NetworkError):
+        logger.warning("⚠️ Временная сетевая ошибка — бот продолжает работу.")
+    except Exception as e:
+        logger.error(f"❌ Необработанная ошибка: {e}", exc_info=True)
+
+# --- Keep-alive ---
+def start_keep_alive():
+    scheduler = BackgroundScheduler()
+    
+    def ping():
+        try:
+            if RENDER_URL:
+                r = requests.get(RENDER_URL)
+                logger.info(f"Keep-alive ping: {r.status_code}")
+        except Exception as e:
+            logger.warning(f"Keep-alive error: {e}")
+
+    scheduler.add_job(ping, "interval", minutes=10)
+    scheduler.start()
+
+# --- Запуск приложения ---
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
 
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
 
@@ -366,25 +397,15 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
-    # Сообщения с текстом / фото (исключая команды)
+    # Сообщения с текстом / фото
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
 
-        # --- Keep Alive ---
-    from apscheduler.schedulers.background import BackgroundScheduler
-    import requests
+    # Обработчик ошибок
+    app.add_error_handler(error_handler)
 
-def keep_alive():
-    try:
-        if RENDER_URL:
-                r = requests.get(RENDER_URL)
-                logger.info(f"Keep-alive ping: {r.status_code}")
-    except Exception as e:
-            logger.warning(f"Keep-alive error: {e}")
-
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(keep_alive, "interval", minutes=10)
-    scheduler.start()
-
+    # Старт keep-alive
+    start_keep_alive()
+    
     port = int(os.environ.get("PORT", "10000"))
     app.run_webhook(
         listen="0.0.0.0",
@@ -392,7 +413,6 @@ def keep_alive():
         url_path=TOKEN,
         webhook_url=f"{RENDER_URL}/{TOKEN}"
     )
-
 
 if __name__ == "__main__":
     main()
