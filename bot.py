@@ -280,6 +280,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     prompt = update.message.caption or update.message.text
+
+    # 👉 Добавляем логирование пользователя и запроса
+    logger.info(f"🎨 Генерация: user={user_id}, prompt='{prompt}'")
+    
     if not prompt:
         await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
         return
