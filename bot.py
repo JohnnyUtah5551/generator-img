@@ -363,7 +363,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-from telegram.ext import PreCheckoutQueryHandler, MessageHandler, filters
+from telegram.ext import PreCheckoutQueryHandler
 from telegram.error import Forbidden, TimedOut, NetworkError
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
