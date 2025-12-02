@@ -159,6 +159,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка при ответе на callback: {e}")
 
     if query.data == "generate":
+        context.user_data["can_generate"] = True
         await query.message.reply_text(
             "Создавайте и редактируйте изображения прямо в чате.\n\n"
             "Для вас работает Google Gemini 2.5 Flash — она же Nano Banana 🍌\n\n"
@@ -268,6 +269,11 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Сообщения с текстом / фото
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    # --- БЛОКИРОВКА НЕЗАПРОШЕННОЙ ГЕНЕРАЦИИ ---
+    if not context.user_data.get("can_generate"):
+        return  # просто игнорируем любые сообщения, пока пользователь НЕ нажал "Сгенерировать"
+
     # Проверка баланса с учётом админа
     user_id = update.effective_user.id
     balance = get_user(user_id)
@@ -302,7 +308,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if result:
         await update.message.reply_photo(result)
-        
+
+        # Отключаем режим генерации — чтобы текст не запускал повторную генерацию
+        context.user_data["can_generate"] = False
+
         # Списание генераций только для обычных пользователей
         if not is_admin:
             update_balance(user_id, -1, "spend")
@@ -323,6 +332,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["can_generate"] = False
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("Главное меню:", reply_markup=main_menu())
