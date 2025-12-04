@@ -7,6 +7,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
     LabeledPrice,
+    PreCheckoutQuery,
 )
 from telegram.ext import (
     Application,
@@ -90,6 +91,14 @@ def update_balance(user_id: int, delta: int, tx_type: str):
     conn.commit()
     conn.close()
 
+# Проверка подписки на канал
+async def check_subscription(user_id, bot):
+    try:
+        member = await bot.get_chat_member(chat_id="@imaigenpromts", user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.warning(f"Ошибка проверки подписки: {e}")
+        return False
 
 # Главное меню
 def main_menu():
@@ -158,33 +167,84 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.error(f"Ошибка при ответе на callback: {e}")
 
+    # --- Генерация ---
     if query.data == "generate":
+        user_id = query.from_user.id
+        balance = get_user(user_id)
+
+        # Проверяем подписку только если есть бесплатные генерации
+        if balance > 0:
+            subscribed = await check_subscription(user_id, context.bot)
+
+            if not subscribed and not context.user_data.get("subscribed_once"):
+                keyboard = [
+                    [InlineKeyboardButton("Я подписался ✅", callback_data="confirm_sub")]
+                ]
+                await query.message.reply_text(
+                    "🎁 Чтобы получить *3 бесплатные генерации*, подпишитесь на канал:\n"
+                    "👉 @imaigenpromts\n\n"
+                    "После подписки нажмите кнопку ниже.",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
+
+        # Разрешаем генерацию
         context.user_data["can_generate"] = True
         await query.message.reply_text(
-            "Создавайте и редактируйте изображения прямо в чате.\n\n"
-            "Для вас работает Google Gemini 2.5 Flash — она же Nano Banana 🍌\n\n"
-            "Отправьте одно изображение с подписью, что нужно изменить, или напишите текст."
+            "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
         )
         await query.message.delete()
+        return
+
+    # --- Баланс ---
     elif query.data == "balance":
         balance = get_user(query.from_user.id)
-        await query.message.reply_text(f"💰 У вас {balance} генераций.", reply_markup=main_menu())
+        await query.message.reply_text(
+            f"💰 У вас {balance} генераций.",
+            reply_markup=main_menu()
+        )
+
+    # --- Покупка ---
     elif query.data == "buy":
         keyboard = [
             [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
             [InlineKeyboardButton("50 генераций — 200⭐", callback_data="buy_50")],
             [InlineKeyboardButton("100 генераций — 400⭐", callback_data="buy_100")],
         ]
-        await query.message.reply_text("Выберите пакет:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.reply_text(
+            "Выберите пакет:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # --- Помощь ---
     elif query.data == "help":
         help_text = (
             "ℹ️ Чтобы сгенерировать изображение, сначала нажмите кнопку «Сгенерировать».\n\n"
             "После этого отправьте одно изображение с подписью, что нужно изменить, "
             "или просто текст для новой картинки.\n\n"
-            "💰 Для покупок генераций используется Telegram Stars."
-            " Канал с текстовыми промтами ИИ-фотосессий @imaigenpromts "
+            "💰 Для покупок генераций используется Telegram Stars.\n"
+            "Канал с текстовыми промтами @imaigenpromts"
         )
         await query.message.reply_text(help_text, reply_markup=main_menu())
+
+# Пользователь нажал "Я подписался"
+async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    subscribed = await check_subscription(user_id, context.bot)
+
+    if subscribed:
+        context.user_data["subscribed_once"] = True
+        await query.message.edit_text(
+            "🎉 Отлично! Подписка подтверждена.\nТеперь вы можете использовать бесплатные генерации.",
+            reply_markup=main_menu()
+        )
+    else:
+        await query.message.reply_text(
+            "❌ Вы ещё не подписались!\nПожалуйста, подпишитесь на канал:\n@imaigenpromts"
+        )
 
 
 # Покупки с Telegram Stars
@@ -289,46 +349,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     prompt = update.message.caption or update.message.text
 
-    # 👉 Добавляем логирование пользователя и запроса
-    logger.info(f"🎨 Генерация: user={user_id}, prompt='{prompt}'")
+   prompt = update.message.caption or update.message.text
+if not prompt:
+    await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
+    return
+
+# 👉 Добавляем логирование
+user = update.effective_user
+username = f"@{user.username}" if user.username else user.full_name
+logger.info(f"🎨 Генерация: {username} (ID {user.id}) → '{prompt}'")
+
+await update.message.reply_text("⏳ Генерация изображения...")
+
+images = []
+if update.message.photo:
+    for photo in update.message.photo[-4:]:
+        file = await photo.get_file()
+        images.append(file.file_path)
+
+result = await generate_image(prompt, images if images else None)
+
+if result:
+    await update.message.reply_photo(result)
+
+    # Отключаем режим генерации — чтобы текст не запускал повторную генерацию
+    context.user_data["can_generate"] = False
+
+    # Списание генераций только для обычных пользователей
+    if not is_admin:
+        update_balance(user_id, -1, "spend")
     
-    if not prompt:
-        await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
-        return
-
-    await update.message.reply_text("⏳ Генерация изображения...")
-
-    images = []
-    if update.message.photo:
-        for photo in update.message.photo[-4:]:
-            file = await photo.get_file()
-            images.append(file.file_path)
-
-    result = await generate_image(prompt, images if images else None)
-
-    if result:
-        await update.message.reply_photo(result)
-
-        # Отключаем режим генерации — чтобы текст не запускал повторную генерацию
-        context.user_data["can_generate"] = False
-
-        # Списание генераций только для обычных пользователей
-        if not is_admin:
-            update_balance(user_id, -1, "spend")
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-                InlineKeyboardButton("✅ Завершить", callback_data="end"),
-            ]
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+            InlineKeyboardButton("✅ Завершить", callback_data="end"),
         ]
-        await update.message.reply_text(
-            "Напишите в чат, если нужно изменить что-то ещё.",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-    else:
-        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
-
+    ]
+    await update.message.reply_text(
+        "Напишите в чат, если нужно изменить что-то ещё.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+else:
+    await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,6 +478,7 @@ def main():
     # Сообщения с текстом / фото
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
 
     # Обработчик ошибок
     app.add_error_handler(error_handler)
