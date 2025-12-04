@@ -167,7 +167,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.error(f"Ошибка при ответе на callback: {e}")
 
-    # --- Генерация ---
+# Генерация
 if query.data == "generate":
     user_id = query.from_user.id
     balance = get_user(user_id)
@@ -190,13 +190,12 @@ if query.data == "generate":
                 )
                 return
 
-        # Разрешаем генерацию
-        context.user_data["can_generate"] = True
-        await query.message.reply_text(
-            "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
-        )
-        await query.message.delete()
-        return
+    # Разрешаем генерацию для всех
+    context.user_data["can_generate"] = True
+    await query.message.reply_text(
+        "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
+    )
+    await query.message.delete()
 
     # --- Баланс ---
     elif query.data == "balance":
