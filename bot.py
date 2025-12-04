@@ -357,27 +357,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     result = await generate_image(prompt, images if images else None)
 
-# Проверяем результат
-if not result or (isinstance(result, dict) and "error" in result):
-    error_text = result["error"] if isinstance(result, dict) and "error" in result else \
-        "⚠️ Генерация отклонена системой модерации или временно недоступна.\nПопробуйте изменить описание и отправить снова."
-    await update.message.reply_text(error_text)
-else:
-    await update.message.reply_photo(result)
-    context.user_data["can_generate"] = False
-    if not is_admin:
-        update_balance(user_id, -1, "spend")
+    # --- Проверяем результат (внутри функции!) ---
+    if not result or (isinstance(result, dict) and "error" in result):
+        error_text = result["error"] if isinstance(result, dict) and "error" in result else \
+            "⚠️ Генерация отклонена системой модерации или временно недоступна.\nПопробуйте изменить описание и отправить снова."
+        await update.message.reply_text(error_text)
+    else:
+        await update.message.reply_photo(result)
+        context.user_data["can_generate"] = False
+        if not is_admin:
+            update_balance(user_id, -1, "spend")
 
-    keyboard = [
-        [
-            InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-            InlineKeyboardButton("✅ Завершить", callback_data="end"),
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+                InlineKeyboardButton("✅ Завершить", callback_data="end"),
+            ]
         ]
-    ]
-    await update.message.reply_text(
-        "Напишите в чат, если нужно изменить что-то ещё.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+        await update.message.reply_text(
+            "Напишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
