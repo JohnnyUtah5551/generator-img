@@ -159,43 +159,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик меню
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try:
-        await query.answer()
-    except Exception as e:
-        if "Query is too old" in str(e):
-            logger.warning("Просроченный callback query — можно игнорировать")
-        else:
-            logger.error(f"Ошибка при ответе на callback: {e}")
+    await query.answer()
 
-# Генерация
-if query.data == "generate":
-    user_id = query.from_user.id
-    balance = get_user(user_id)
+    # --- Генерация ---
+    if query.data == "generate":
+        user_id = query.from_user.id
+        balance = get_user(user_id)
 
-    # Админ всегда может генерировать
-    if user_id != ADMIN_ID:
-        # Проверяем подписку только если есть бесплатные генерации
-        if balance > 0:
-            subscribed = await check_subscription(user_id, context.bot)
+        # Админ всегда может генерировать
+        if user_id != ADMIN_ID:
+            if balance > 0:
+                subscribed = await check_subscription(user_id, context.bot)
+                if not subscribed and not context.user_data.get("subscribed_once"):
+                    keyboard = [
+                        [InlineKeyboardButton("Я подписался ✅", callback_data="confirm_sub")]
+                    ]
+                    await query.message.reply_text(
+                        "🎁 Чтобы получить *3 бесплатные генерации*, подпишитесь на канал:\n"
+                        "👉 @imaigenpromts\n\n"
+                        "После подписки нажмите кнопку ниже.",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    return
 
-            if not subscribed and not context.user_data.get("subscribed_once"):
-                keyboard = [
-                    [InlineKeyboardButton("Я подписался ✅", callback_data="confirm_sub")]
-                ]
-                await query.message.reply_text(
-                    "🎁 Чтобы получить *3 бесплатные генерации*, подпишитесь на канал:\n"
-                    "👉 @imaigenpromts\n\n"
-                    "После подписки нажмите кнопку ниже.",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                return
-
-    # Разрешаем генерацию для всех
-    context.user_data["can_generate"] = True
-    await query.message.reply_text(
-        "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
-    )
-    await query.message.delete()
+        # Разрешаем генерацию
+        context.user_data["can_generate"] = True
+        await query.message.reply_text(
+            "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
+        )
+        await query.message.delete()
+        return  # <- обязательно, чтобы не шло дальше к elif
 
     # --- Баланс ---
     elif query.data == "balance":
