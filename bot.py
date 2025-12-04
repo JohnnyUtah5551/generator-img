@@ -188,7 +188,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
         )
         await query.message.delete()
-        return  # <- обязательно, чтобы не шло дальше к elif
+        return  # важно, чтобы не шло дальше к elif
 
     # --- Баланс ---
     elif query.data == "balance":
