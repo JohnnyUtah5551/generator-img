@@ -355,7 +355,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.photo[-1].get_file()
         images = [file.file_path]
 
-result = await generate_image(prompt, images if images else None)
+    result = await generate_image(prompt, images if images else None)
 
 # Проверяем результат
 if not result or (isinstance(result, dict) and "error" in result):
