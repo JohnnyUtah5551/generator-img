@@ -168,10 +168,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка при ответе на callback: {e}")
 
     # --- Генерация ---
-    if query.data == "generate":
-        user_id = query.from_user.id
-        balance = get_user(user_id)
+if query.data == "generate":
+    user_id = query.from_user.id
+    balance = get_user(user_id)
 
+    # Админ всегда может генерировать
+    if user_id != ADMIN_ID:
         # Проверяем подписку только если есть бесплатные генерации
         if balance > 0:
             subscribed = await check_subscription(user_id, context.bot)
