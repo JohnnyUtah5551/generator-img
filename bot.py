@@ -335,6 +335,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     balance = get_user(user_id)
     is_admin = user_id == ADMIN_ID
+
     if not is_admin and balance <= 0:
         await update.message.reply_text(
             "⚠️ У вас закончились генерации. Пополните баланс через меню.",
@@ -344,7 +345,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     prompt = update.message.caption or update.message.text
     if not prompt:
-        await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
+        await update.message.reply_text(
+            "Пожалуйста, добавьте описание для генерации."
+        )
         return
 
     user = update.effective_user
@@ -377,7 +380,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     else:
-        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+        await update.message.reply_text(
+            "⚠️ Извините, генерация временно недоступна."
+        )
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
