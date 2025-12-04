@@ -329,16 +329,11 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Сообщения с текстом / фото
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    # --- БЛОКИРОВКА НЕЗАПРОШЕННОЙ ГЕНЕРАЦИИ ---
     if not context.user_data.get("can_generate"):
-        return  # просто игнорируем любые сообщения, пока пользователь НЕ нажал "Сгенерировать"
+        return
 
-    # Проверка баланса с учётом админа
     user_id = update.effective_user.id
     balance = get_user(user_id)
-
-    # Если админ — пропускаем проверку баланса
     is_admin = user_id == ADMIN_ID
     if not is_admin and balance <= 0:
         await update.message.reply_text(
@@ -348,49 +343,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     prompt = update.message.caption or update.message.text
+    if not prompt:
+        await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
+        return
 
-   prompt = update.message.caption or update.message.text
-if not prompt:
-    await update.message.reply_text("Пожалуйста, добавьте описание для генерации.")
-    return
+    user = update.effective_user
+    username = f"@{user.username}" if user.username else user.full_name
+    logger.info(f"🎨 Генерация: {username} (ID {user.id}) → '{prompt}'")
 
-# 👉 Добавляем логирование
-user = update.effective_user
-username = f"@{user.username}" if user.username else user.full_name
-logger.info(f"🎨 Генерация: {username} (ID {user.id}) → '{prompt}'")
+    await update.message.reply_text("⏳ Генерация изображения...")
 
-await update.message.reply_text("⏳ Генерация изображения...")
+    images = []
+    if update.message.photo:
+        file = await update.message.photo[-1].get_file()
+        images = [file.file_path]
 
-images = []
-if update.message.photo:
-    for photo in update.message.photo[-4:]:
-        file = await photo.get_file()
-        images.append(file.file_path)
+    result = await generate_image(prompt, images if images else None)
 
-result = await generate_image(prompt, images if images else None)
+    if result:
+        await update.message.reply_photo(result)
+        context.user_data["can_generate"] = False
+        if not is_admin:
+            update_balance(user_id, -1, "spend")
 
-if result:
-    await update.message.reply_photo(result)
-
-    # Отключаем режим генерации — чтобы текст не запускал повторную генерацию
-    context.user_data["can_generate"] = False
-
-    # Списание генераций только для обычных пользователей
-    if not is_admin:
-        update_balance(user_id, -1, "spend")
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-            InlineKeyboardButton("✅ Завершить", callback_data="end"),
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
+                InlineKeyboardButton("✅ Завершить", callback_data="end"),
+            ]
         ]
-    ]
-    await update.message.reply_text(
-        "Напишите в чат, если нужно изменить что-то ещё.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-else:
-    await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
+        await update.message.reply_text(
+            "Напишите в чат, если нужно изменить что-то ещё.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        await update.message.reply_text("⚠️ Извините, генерация временно недоступна.")
 
 # Завершение сессии
 async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
