@@ -103,10 +103,10 @@ async def check_subscription(user_id, bot):
 # Главное меню
 def main_menu():
     keyboard = [
-        [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
-        [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
-        [InlineKeyboardButton("⭐ Купить генерации", callback_data="buy")],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
+        [InlineKeyboardButton("🎨 Сгенерировать/Generate", callback_data="generate")],
+        [InlineKeyboardButton("💰 Баланс/Balance", callback_data="balance")],
+        [InlineKeyboardButton("⭐ Купить генерации/Buy generations", callback_data="buy")],
+        [InlineKeyboardButton("ℹ️ Помощь/Help", callback_data="help")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -132,11 +132,11 @@ async def generate_image(prompt: str, images: list = None):
         error_msg = str(e)
         logger.error(f"Ошибка генерации: {error_msg}")
         if "insufficient credit" in error_msg.lower():
-            return {"error": "Недостаточно генераций. Пополните баланс."}
+            return {"error": "Недостаточно генераций. Пополните баланс./Not enough generations. Top up your balance."}
         elif "flagged as sensitive" in error_msg.lower():
-            return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку."}
+            return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку./The request has been rejected by the moderation system. Please try changing the wording."}
         else:
-            return {"error": "Извините, генерация временно недоступна."}
+            return {"error": "Извините, генерация временно недоступна./Sorry, the generation is temporarily unavailable."}
 
 
 # Старт
@@ -147,7 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Привет! Я бот для генерации и редактирования изображений с помощью "
         "нейросети Nano Banana (Google Gemini 2.5 Flash ⚡).\n\n"
-        "✨ У тебя 3 бесплатные генерации.\n\n"
+        "✨ У тебя 3 бесплатные генерации./You have 3 free generations.\n\n"
         "Нажмите кнопку «Сгенерировать» и отправьте одно изображение с подписью, "
         "что нужно изменить, или просто напишите текст, чтобы создать новое изображение."
         " Канал с текстовыми промтами ИИ-фотосессий @imaigenpromts "
@@ -185,7 +185,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Разрешаем генерацию
         context.user_data["can_generate"] = True
         await query.message.reply_text(
-            "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
+            "Создавайте изображение!\nОтправьте текст или одно фото с подписью./Send a text or a single photo with a caption."
         )
         await query.message.delete()
         return  # важно, чтобы не шло дальше к elif
@@ -232,12 +232,12 @@ async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if subscribed:
         context.user_data["subscribed_once"] = True
         await query.message.edit_text(
-            "🎉 Отлично! Подписка подтверждена.\nТеперь вы можете использовать бесплатные генерации.",
+            "🎉 Отлично! Подписка подтверждена./Great! The subscription is confirmed.\nТеперь вы можете использовать бесплатные генерации.",
             reply_markup=main_menu()
         )
     else:
         await query.message.reply_text(
-            "❌ Вы ещё не подписались!\nПожалуйста, подпишитесь на канал:\n@imaigenpromts"
+            "❌ Вы ещё не подписались!/You haven't subscribed yet!\nПожалуйста, подпишитесь на канал:\n@imaigenpromts"
         )
 
 
@@ -316,7 +316,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     update_balance(user_id, gens, "buy")
 
     await update.message.reply_text(
-        f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
+        f"✅ Оплата прошла успешно!/The payment was successful! На ваш баланс добавлено {gens} генераций.",
         reply_markup=main_menu()
     )
 
@@ -332,7 +332,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_admin and balance <= 0:
         await update.message.reply_text(
-            "⚠️ У вас закончились генерации. Пополните баланс через меню.",
+            "⚠️ У вас закончились генерации/You have run out of generations. Пополните баланс через меню.",
             reply_markup=main_menu()
         )
         return
@@ -340,7 +340,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = update.message.caption or update.message.text
     if not prompt:
         await update.message.reply_text(
-            "Пожалуйста, добавьте описание для генерации."
+            "Пожалуйста, добавьте описание для генерации./Please add a description to generate."
         )
         return
 
@@ -360,7 +360,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Проверяем результат (внутри функции!) ---
     if not result or (isinstance(result, dict) and "error" in result):
         error_text = result["error"] if isinstance(result, dict) and "error" in result else \
-            "⚠️ Генерация отклонена системой модерации или временно недоступна.\nПопробуйте изменить описание и отправить снова."
+            "⚠️ Генерация отклонена системой модерации The generation was rejected by the moderation system или временно недоступна.\nПопробуйте изменить описание и отправить снова."
         await update.message.reply_text(error_text)
     else:
         await update.message.reply_photo(result)
