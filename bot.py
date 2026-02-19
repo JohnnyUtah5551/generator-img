@@ -1,17 +1,7 @@
 import os
-import sys
-import time
 import logging
 import sqlite3
-import traceback
-import gc
-import platform
 from datetime import datetime
-from pathlib import Path
-from collections import defaultdict
-import asyncio
-from functools import wraps
-
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -30,225 +20,126 @@ from telegram.ext import (
 )
 from telegram.error import Forbidden, TimedOut, NetworkError
 import replicate
+import sys
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
-from aiohttp import web
-import psutil
 
-# ==================== ЗАЩИТА ОТ ЦИКЛИЧЕСКИХ ПЕРЕЗАПУСКОВ ====================
-CRASH_FILE = "/tmp/bot_crash_counter.txt"
-MAX_CRASHES = 3
-TIME_WINDOW = 300  # 5 минут
-
-def check_crash_loop():
-    """Проверка на циклические перезапуски"""
-    try:
-        current_time = time.time()
-        crashes = []
-        
-        # Читаем историю крашей
-        if os.path.exists(CRASH_FILE):
-            with open(CRASH_FILE, 'r') as f:
-                crashes = [float(line.strip()) for line in f.readlines() if line.strip()]
-        
-        # Оставляем только краши за последние TIME_WINDOW секунд
-        crashes = [t for t in crashes if current_time - t < TIME_WINDOW]
-        
-        # Добавляем текущий краш
-        crashes.append(current_time)
-        
-        # Записываем обновленную историю
-        with open(CRASH_FILE, 'w') as f:
-            for t in crashes[-MAX_CRASHES:]:
-                f.write(f"{t}\n")
-        
-        # Проверяем количество крашей
-        if len(crashes) > MAX_CRASHES:
-            print(f"⚠️ Слишком много перезапусков ({len(crashes)}) за {TIME_WINDOW}с. Пауза 60с...")
-            time.sleep(60)  # Пауза перед следующим запуском
-            
-    except Exception as e:
-        print(f"Ошибка при проверке крашей: {e}")
-
-# Вызываем проверку при старте
-check_crash_loop()
-
-# ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('/tmp/bot.log')
-    ]
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # Отладочная информация
-logger.info(f"Python version: {platform.python_version()}")
-logger.info(f"Platform: {platform.platform()}")
+logger.info(f"Python version: {sys.version}")
 
-# ==================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====================
+# Переменные окружения
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL = os.getenv("RENDER_URL")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
-# Проверка обязательных переменных
+# Проверка переменных
 if not TOKEN:
     logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
     sys.exit(1)
 if not RENDER_URL:
     logger.error("❌ RENDER_URL не установлен!")
     sys.exit(1)
-if not REPLICATE_API_TOKEN:
-    logger.error("❌ REPLICATE_API_TOKEN не установлен!")
-    sys.exit(1)
 
-# ==================== ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ ====================
+# Replicate клиент
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
-# ==================== НАСТРОЙКА БАЗЫ ДАННЫХ ====================
+# Настройка базы данных
 DB_FILE = "bot.db"
-user_locks = defaultdict(asyncio.Lock)  # Блокировки для пользователей
 
 def init_db():
-    """Инициализация базы данных"""
-    try:
-        conn = sqlite3.connect(DB_FILE, timeout=20)
-        cur = conn.cursor()
-        
-        # Таблица пользователей
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                balance INTEGER DEFAULT 3,
-                created_at TEXT
-            )
-        """)
-        
-        # Таблица транзакций
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                type TEXT,
-                amount INTEGER,
-                payment_id TEXT UNIQUE,
-                created_at TEXT
-            )
-        """)
-        
-        # Таблица для статистики запусков
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                start_time TEXT,
-                restart_reason TEXT
-            )
-        """)
-        
-        # Записываем время запуска
-        cur.execute(
-            "INSERT INTO bot_stats (start_time, restart_reason) VALUES (?, ?)",
-            (datetime.now().isoformat(), "normal_start")
+    """Создание базы данных"""
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    
+    # Таблица пользователей
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            balance INTEGER DEFAULT 3,
+            created_at TEXT
         )
-        
-        conn.commit()
-        conn.close()
-        logger.info("✅ База данных инициализирована")
-    except Exception as e:
-        logger.error(f"❌ Ошибка инициализации БД: {e}")
-        time.sleep(5)
-        sys.exit(1)
+    """)
+    
+    # Таблица транзакций
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            type TEXT,
+            amount INTEGER,
+            payment_id TEXT UNIQUE,
+            created_at TEXT
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+    logger.info("✅ База данных инициализирована")
 
 def get_user(user_id: int):
-    """Получение или создание пользователя с блокировкой"""
-    async with user_locks[user_id]:
-        try:
-            conn = sqlite3.connect(DB_FILE, timeout=20)
-            cur = conn.cursor()
-            cur.execute("SELECT id, balance FROM users WHERE id=?", (user_id,))
-            row = cur.fetchone()
-            
-            if not row:
-                cur.execute(
-                    "INSERT INTO users (id, balance, created_at) VALUES (?, ?, ?)",
-                    (user_id, 3, datetime.utcnow().isoformat()),
-                )
-                conn.commit()
-                balance = 3
-                logger.info(f"👤 Новый пользователь: {user_id}")
-            else:
-                balance = row[1]
-            
-            conn.close()
-            return balance
-        except Exception as e:
-            logger.error(f"❌ Ошибка get_user для {user_id}: {e}")
-            return 0
+    """Получение или создание пользователя"""
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT id, balance FROM users WHERE id=?", (user_id,))
+    row = cur.fetchone()
+    
+    if not row:
+        cur.execute(
+            "INSERT INTO users (id, balance, created_at) VALUES (?, ?, ?)",
+            (user_id, 3, datetime.now().isoformat()),
+        )
+        conn.commit()
+        balance = 3
+        logger.info(f"👤 Новый пользователь: {user_id}")
+    else:
+        balance = row[1]
+    
+    conn.close()
+    return balance
 
 def update_balance(user_id: int, delta: int, tx_type: str, payment_id: str = None):
-    """Обновление баланса пользователя с блокировкой"""
-    async with user_locks[user_id]:
-        try:
-            conn = sqlite3.connect(DB_FILE, timeout=20)
-            cur = conn.cursor()
-            
-            # Обновляем баланс
-            cur.execute("UPDATE users SET balance = balance + ? WHERE id=?", (delta, user_id))
-            
-            # Записываем транзакцию
-            if payment_id:
-                cur.execute(
-                    "INSERT INTO transactions (user_id, type, amount, payment_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
-                    (user_id, tx_type, delta, payment_id)
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO transactions (user_id, type, amount, created_at) VALUES (?, ?, ?, datetime('now'))",
-                    (user_id, tx_type, delta)
-                )
-            
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"💰 Баланс обновлён: user={user_id}, delta={delta}, type={tx_type}")
-            return get_user(user_id)
-        except Exception as e:
-            logger.error(f"❌ Ошибка update_balance для {user_id}: {e}")
-            return None
+    """Обновление баланса пользователя"""
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    
+    # Обновляем баланс
+    cur.execute("UPDATE users SET balance = balance + ? WHERE id=?", (delta, user_id))
+    
+    # Записываем транзакцию
+    if payment_id:
+        cur.execute(
+            "INSERT INTO transactions (user_id, type, amount, payment_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, tx_type, delta, payment_id, datetime.now().isoformat())
+        )
+    else:
+        cur.execute(
+            "INSERT INTO transactions (user_id, type, amount, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, tx_type, delta, datetime.now().isoformat())
+        )
+    
+    conn.commit()
+    conn.close()
+    logger.info(f"💰 Баланс обновлён: user={user_id}, delta={delta}, type={tx_type}")
 
-# ==================== ДЕКОРАТОР ДЛЯ ПОВТОРНЫХ ПОПЫТОК ====================
-def retry_async(max_retries=3, delay=1):
-    """Декоратор для повторных попыток при ошибках"""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            for attempt in range(max_retries):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"❌ Все попытки исчерпаны для {func.__name__}: {e}")
-                        raise
-                    wait = delay * (attempt + 1)
-                    logger.warning(f"⚠️ Попытка {attempt + 1} не удалась для {func.__name__}. Повтор через {wait}с")
-                    await asyncio.sleep(wait)
-            return None
-        return wrapper
-    return decorator
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+# Проверка подписки на канал
 async def check_subscription(user_id, bot):
     """Проверка подписки на канал"""
     try:
         member = await bot.get_chat_member(chat_id="@imaigenpromts", user_id=user_id)
         return member.status in ("member", "administrator", "creator")
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка проверки подписки для {user_id}: {e}")
+        logger.warning(f"⚠️ Ошибка проверки подписки: {e}")
         return False
 
+# Главное меню
 def main_menu():
     """Главное меню бота"""
     keyboard = [
@@ -259,8 +150,7 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ====================
-@retry_async(max_retries=3, delay=2)
+# Генерация изображения через Replicate
 async def generate_image(prompt: str, images: list = None):
     """Генерация изображения через Replicate"""
     try:
@@ -293,7 +183,7 @@ async def generate_image(prompt: str, images: list = None):
         else:
             return {"error": "Извините, генерация временно недоступна."}
 
-# ==================== ОБРАБОТЧИКИ КОМАНД ====================
+# Старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     try:
@@ -314,70 +204,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка в start: {e}")
 
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестовая команда для проверки работы бота"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    try:
-        # Информация о системе
-        memory = psutil.virtual_memory()
-        
-        text = (
-            f"✅ **Бот работает нормально!**\n\n"
-            f"📊 **Статистика:**\n"
-            f"• Время работы: {time.time() - context.application.start_time:.0f}с\n"
-            f"• Память: {memory.percent}% ({memory.used/1024/1024:.0f}MB)\n"
-            f"• Python: {platform.python_version()}\n"
-        )
-        
-        await update.message.reply_text(text, parse_mode='Markdown')
-        logger.info(f"📊 Тест от админа {update.effective_user.id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка в test: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса бота"""
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    try:
-        # Статистика из БД
-        conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
-        
-        cur.execute("SELECT COUNT(*) FROM users")
-        users_count = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM transactions WHERE type='buy'")
-        purchases = cur.fetchone()[0]
-        
-        cur.execute("SELECT SUM(amount) FROM transactions WHERE type='spend'")
-        spent = abs(cur.fetchone()[0] or 0)
-        
-        cur.execute("SELECT start_time FROM bot_stats ORDER BY id DESC LIMIT 1")
-        last_start = cur.fetchone()
-        
-        conn.close()
-        
-        memory = psutil.virtual_memory()
-        
-        text = (
-            f"📊 **Статус бота:**\n\n"
-            f"👥 Пользователей: {users_count}\n"
-            f"💰 Покупок: {purchases}\n"
-            f"🎨 Генераций: {spent}\n"
-            f"⏱ Аптайм: {time.time() - context.application.start_time:.0f}с\n"
-            f"💾 RAM: {memory.percent}%\n"
-            f"🚀 Последний старт: {last_start[0] if last_start else 'N/A'}"
-        )
-        
-        await update.message.reply_text(text, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"❌ Ошибка в status: {e}")
-
-# ==================== ОБРАБОТЧИКИ КНОПОК ====================
+# Обработчик меню
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки главного меню"""
     try:
@@ -387,6 +214,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"🔘 Нажатие кнопки {query.data} от {user_id}")
 
+        # Генерация
         if query.data == "generate":
             balance = get_user(user_id)
 
@@ -399,7 +227,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             [InlineKeyboardButton("Я подписался ✅", callback_data="confirm_sub")]
                         ]
                         await query.message.reply_text(
-                            "🎁 Чтобы получить *3 бесплатные генерации*, подпишитесь на канал\n"
+                            "🎁 Чтобы получить 3 бесплатные генерации, подпишитесь на канал\n"
                             "👉 @imaigenpromts\n\n"
                             "После подписки нажмите кнопку ниже.",
                             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -412,6 +240,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await query.message.delete()
 
+        # Баланс
         elif query.data == "balance":
             balance = get_user(user_id)
             await query.message.reply_text(
@@ -419,6 +248,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu()
             )
 
+        # Покупка
         elif query.data == "buy":
             keyboard = [
                 [InlineKeyboardButton("10 генераций — 40⭐", callback_data="buy_10")],
@@ -430,6 +260,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
 
+        # Помощь
         elif query.data == "help":
             help_text = (
                 "ℹ️ **Помощь:**\n\n"
@@ -442,8 +273,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(help_text, parse_mode='Markdown', reply_markup=main_menu())
             
     except Exception as e:
-        logger.error(f"❌ Ошибка в menu_handler: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка в menu_handler: {e}")
 
+# Подтверждение подписки
 async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подтверждение подписки на канал"""
     try:
@@ -466,6 +298,7 @@ async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"❌ Ошибка в confirm_sub_handler: {e}")
 
+# Покупка через Stars
 async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик покупки генераций через Telegram Stars"""
     try:
@@ -473,9 +306,9 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
 
         packages = {
-            "buy_10": {"gens": 10, "stars": 40, "title": "10 генераций"},
-            "buy_50": {"gens": 50, "stars": 200, "title": "50 генераций"},
-            "buy_100": {"gens": 100, "stars": 400, "title": "100 генераций"},
+            "buy_10": {"gens": 10, "stars": 40},
+            "buy_50": {"gens": 50, "stars": 200},
+            "buy_100": {"gens": 100, "stars": 400},
         }
 
         if query.data in packages:
@@ -483,41 +316,33 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.message.reply_invoice(
                 title=f"Покупка {pkg['gens']} генераций",
-                description=f"✨ Пополнение баланса для генерации изображений\n"
-                           f"🎨 {pkg['gens']} генераций нейросетью Nano Banana",
+                description=f"Пополнение баланса для генерации изображений",
                 payload=query.data,
-                provider_token="",  # Обязательно для Stars
+                provider_token="",
                 currency="XTR",
                 prices=[LabeledPrice(
                     label=f"{pkg['gens']} генераций", 
                     amount=pkg['stars']
                 )],
-                start_parameter=f"create_invoice_stars_{pkg['gens']}",
-                need_name=False,
-                need_phone_number=False,
-                need_email=False,
-                need_shipping_address=False,
-                is_flexible=False,
-                protect_content=False
+                start_parameter=f"stars-payment-{pkg['gens']}"
             )
             logger.info(f"💰 Инвойс отправлен пользователю {query.from_user.id}: {pkg['gens']} ген за {pkg['stars']}⭐")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки инвойса: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка отправки инвойса: {e}")
         await query.message.reply_text(
             "❌ Ошибка при создании платежа. Пожалуйста, попробуйте позже.",
             reply_markup=main_menu()
         )
 
+# Предварительная проверка платежа
 async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подтверждение предварительной проверки платежа"""
-    try:
-        query: PreCheckoutQuery = update.pre_checkout_query
-        logger.info(f"💳 Pre-checkout: {query.invoice_payload} от {query.from_user.id}")
-        await query.answer(ok=True)
-    except Exception as e:
-        logger.error(f"❌ Ошибка в pre_checkout_handler: {e}")
+    query: PreCheckoutQuery = update.pre_checkout_query
+    logger.info(f"💳 Pre-checkout: {query.invoice_payload}")
+    await query.answer(ok=True)
 
+# Успешная оплата
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка успешного платежа"""
     try:
@@ -539,6 +364,17 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text("⚠️ Ошибка: неизвестный пакет.")
             return
 
+        # Проверяем, не было ли уже такой оплаты
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE payment_id=?", (payment_id,))
+        if cur.fetchone()[0] > 0:
+            conn.close()
+            logger.warning(f"Повторная оплата {payment_id}")
+            await update.message.reply_text("✅ Платёж уже был обработан.")
+            return
+        conn.close()
+
         # Начисляем генерации
         update_balance(user_id, gens, "buy", payment_id)
 
@@ -548,22 +384,9 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         )
         
     except Exception as e:
-        logger.error(f"❌ Ошибка в successful_payment_handler: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Ошибка при обработке платежа. Обратитесь к администратору."
-        )
+        logger.error(f"❌ Ошибка в successful_payment_handler: {e}")
 
-async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Завершение сессии генерации"""
-    try:
-        context.user_data["can_generate"] = False
-        query = update.callback_query
-        await query.answer()
-        await query.message.reply_text("Главное меню:", reply_markup=main_menu())
-    except Exception as e:
-        logger.error(f"❌ Ошибка в end_handler: {e}")
-
-# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
+# Обработка сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений и фото"""
     try:
@@ -575,6 +398,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance = get_user(user_id)
         is_admin = user_id == ADMIN_ID
 
+        # Проверка баланса (админ всегда может)
         if not is_admin and balance <= 0:
             await update.message.reply_text(
                 "⚠️ У вас закончились генерации. Пополните баланс через меню.",
@@ -589,25 +413,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Валидация промпта
-        if len(prompt) > 1000:
-            await update.message.reply_text("❌ Слишком длинный запрос (макс. 1000 символов)")
-            return
-
         user = update.effective_user
         username = f"@{user.username}" if user.username else user.full_name
         logger.info(f"🎨 Генерация: {username} (ID {user.id}) → '{prompt[:50]}...'")
 
         await update.message.reply_text("⏳ Генерация изображения...")
 
-        # Получаем изображение, если есть
+        # Получаем фото, если есть
         images = []
         if update.message.photo:
-            try:
-                file = await update.message.photo[-1].get_file()
-                images = [file.file_path]
-            except Exception as e:
-                logger.error(f"❌ Ошибка получения фото: {e}")
+            file = await update.message.photo[-1].get_file()
+            images = [file.file_path]
 
         # Генерируем
         result = await generate_image(prompt, images if images else None)
@@ -619,9 +435,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_photo(result)
             
+            # Списание (только для не-админов)
             if not is_admin:
                 update_balance(user_id, -1, "spend")
-                logger.info(f"📉 Списана 1 генерация у {user_id}, остаток: {get_user(user_id)}")
+                logger.info(f"📉 Списана 1 генерация у {user_id}")
 
             keyboard = [
                 [
@@ -635,159 +452,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
     except Exception as e:
-        logger.error(f"❌ Ошибка в handle_message: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Произошла ошибка. Попробуйте позже.",
-            reply_markup=main_menu()
-        )
+        logger.error(f"❌ Ошибка в handle_message: {e}")
 
-# ==================== ОБРАБОТЧИК ОШИБОК ====================
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный обработчик ошибок"""
-    try:
-        # Логируем ошибку с полным traceback
-        error_msg = f"❌ Ошибка: {context.error}\n"
-        error_msg += f"Тип: {type(context.error).__name__}\n"
-        error_msg += f"Traceback: {traceback.format_exc()}"
-        logger.error(error_msg)
-        
-        # Отправляем админу
-        if ADMIN_ID and update:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"⚠️ Ошибка в боте:\n```\n{str(context.error)[:500]}\n```",
-                    parse_mode='Markdown'
-                )
-            except:
-                pass
-                
-        # Сохраняем в файл для анализа
-        with open("/tmp/bot_errors.log", "a") as f:
-            f.write(f"{datetime.now()}: {error_msg}\n")
-            
-        # Принудительная сборка мусора
-        gc.collect()
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка в обработчике ошибок: {e}")
+# Завершение сессии
+async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Завершение сессии генерации"""
+    context.user_data["can_generate"] = False
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Главное меню:", reply_markup=main_menu())
 
-# ==================== HEALTH CHECK ====================
-async def health_check(request):
-    """Endpoint для проверки здоровья"""
-    try:
-        # Проверяем БД
-        conn = sqlite3.connect(DB_FILE, timeout=5)
-        conn.execute("SELECT 1").fetchone()
-        conn.close()
-        
-        # Проверяем память
-        memory = psutil.virtual_memory()
-        if memory.percent > 90:
-            return web.Response(text=f"WARNING: High memory usage ({memory.percent}%)", status=200)
-        
-        # Проверяем Replicate API
-        try:
-            replicate_client.run("google/nano-banana", input={"prompt": "test", "num_outputs": 1})
-        except:
-            pass  # Не критично для health check
-            
-        return web.Response(text="OK", status=200)
-    except Exception as e:
-        logger.error(f"❌ Health check failed: {e}")
-        return web.Response(text=f"ERROR: {e}", status=500)
-
-async def root_handler(request):
-    """Корневой endpoint"""
-    return web.Response(text="Bot is running! Use /health for status")
-
-# ==================== KEEP-ALIVE ====================
-def start_keep_alive(app):
-    """Запуск keep-alive для Render"""
-    try:
-        scheduler = BackgroundScheduler()
-        
-        def ping():
-            try:
-                if RENDER_URL:
-                    # Стучимся на health-check endpoint
-                    r = requests.get(f"{RENDER_URL}/health", timeout=30)
-                    logger.info(f"📡 Keep-alive ping: {r.status_code}")
-            except Exception as e:
-                logger.warning(f"⚠️ Keep-alive error: {e}")
-
-        scheduler.add_job(ping, "interval", minutes=10)
-        scheduler.start()
-        logger.info("✅ Keep-alive scheduler запущен")
-        
-        # Добавляем health check endpoints
-        app.web_app.router.add_get('/health', health_check)
-        app.web_app.router.add_get('/', root_handler)
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска keep-alive: {e}")
-
-# ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
-def main():
-    """Главная функция запуска бота"""
-    try:
-        # Инициализация БД
-        init_db()
-        
-        # Создание приложения
-        app = Application.builder().token(TOKEN).build()
-        
-        # Сохраняем время старта
-        app.start_time = time.time()
-
-        # Команды
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("stats", stats))
-        app.add_handler(CommandHandler("test", test))
-        app.add_handler(CommandHandler("status", status))
-
-        # Меню
-        app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
-        app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
-        app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
-        app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
-
-        # Оплата
-        app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
-        app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-
-        # Сообщения
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        app.add_handler(MessageHandler(filters.PHOTO, handle_message))
-
-        # Обработчик ошибок
-        app.add_error_handler(error_handler)
-
-        # Запуск keep-alive
-        start_keep_alive(app)
-        
-        # Запуск вебхука
-        port = int(os.environ.get("PORT", 10000))
-        logger.info(f"🚀 Запуск вебхука на порту {port}, URL: {RENDER_URL}")
-        
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=TOKEN,
-            webhook_url=f"{RENDER_URL}/{TOKEN}",
-            allowed_updates=Update.ALL_TYPES
-        )
-        
-    except Exception as e:
-        logger.critical(f"❌ Критическая ошибка при запуске: {e}", exc_info=True)
-        # Пишем в файл о краше
-        with open("/tmp/bot_crash.txt", "a") as f:
-            f.write(f"{time.time()}\n")
-        # Ждём перед выходом
-        time.sleep(5)
-        sys.exit(1)
-
-# Функция stats (была пропущена)
+# Статистика для админа
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика для админа"""
     if update.effective_user.id != ADMIN_ID:
@@ -823,6 +498,89 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"❌ Ошибка в stats: {e}")
+
+# Тестовая команда
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестовая команда для проверки"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    await update.message.reply_text("✅ Бот работает!")
+
+# Обработчик ошибок
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный обработчик ошибок"""
+    try:
+        raise context.error
+    except Forbidden:
+        user_id = update.effective_user.id if update and update.effective_user else "неизвестно"
+        logger.warning(f"⚠️ Пользователь {user_id} заблокировал бота.")
+    except (TimedOut, NetworkError):
+        logger.warning("⚠️ Временная сетевая ошибка")
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
+
+# Keep-alive
+def start_keep_alive():
+    """Запуск keep-alive"""
+    scheduler = BackgroundScheduler()
+    
+    def ping():
+        try:
+            if RENDER_URL:
+                r = requests.get(RENDER_URL, timeout=30)
+                logger.info(f"📡 Keep-alive ping: {r.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Keep-alive error: {e}")
+
+    scheduler.add_job(ping, "interval", minutes=10)
+    scheduler.start()
+    logger.info("✅ Keep-alive запущен")
+
+# Запуск приложения
+def main():
+    """Главная функция"""
+    # Инициализация БД
+    init_db()
+    
+    # Создание приложения
+    app = Application.builder().token(TOKEN).build()
+
+    # Команды
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("test", test))
+
+    # Меню
+    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
+    app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
+    app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
+    app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
+
+    # Оплата
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+    # Сообщения
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_message))
+
+    # Обработчик ошибок
+    app.add_error_handler(error_handler)
+
+    # Keep-alive
+    start_keep_alive()
+    
+    # Запуск вебхука
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"🚀 Запуск вебхука на порту {port}")
+    
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TOKEN,
+        webhook_url=f"{RENDER_URL}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
