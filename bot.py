@@ -255,15 +255,14 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data in package_map:
         gens, stars = package_map[query.data]
 
-        await context.bot.send_invoice(
-            chat_id=query.from_user.id,
+        # ИСПРАВЛЕНО: новый формат для Telegram Stars
+        await query.message.reply_invoice(
             title="Покупка генераций",
             description=f"{gens} генераций для нейросети",
             payload=query.data,
-            provider_token="",  # для Telegram Stars оставляем пустым!
-            currency="XTR",
+            currency="XTR",  # Код для Telegram Stars
             prices=[LabeledPrice(label=f"{gens} генераций", amount=stars)],
-            start_parameter=f"stars-payment-{gens}",
+            # Убираем provider_token - для Stars он не нужен
         )
 
 
