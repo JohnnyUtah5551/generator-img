@@ -2,3 +2,5 @@ python-telegram-bot[webhooks,job-queue]==20.7
 replicate==0.22.0
 deep-translator==1.11.4
 aiohttp==3.9.5
+apscheduler==3.10.4
+requests==2.31.0
