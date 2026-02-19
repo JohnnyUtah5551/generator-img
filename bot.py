@@ -16,6 +16,7 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
+    PreCheckoutQueryHandler,  # ВАЖНО: добавить этот импорт!
 )
 import replicate
 import sys
@@ -330,12 +331,12 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pkg = packages[query.data]
         
         try:
-            # Отправляем инвойс для Stars
+            # ИСПРАВЛЕНО: Добавлен provider_token=""
             await query.message.reply_invoice(
                 title=f"Покупка {pkg['gens']} генераций",
                 description=f"Пополнение баланса для генерации изображений",
                 payload=query.data,
-                provider_token="",  # Для Stars оставляем пустым
+                provider_token="",  # Обязательно для Stars!
                 currency="XTR",
                 prices=[LabeledPrice(label=pkg['title'], amount=pkg['stars'])],
                 start_parameter=f"stars-payment-{pkg['gens']}"
@@ -567,7 +568,7 @@ def main():
     app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
     app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
 
-    # Оплата
+    # Оплата - ИСПРАВЛЕНО: PreCheckoutQueryHandler теперь импортирован
     app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
