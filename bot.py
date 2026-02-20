@@ -4,7 +4,7 @@ import sqlite3
 import time
 import signal
 import sys
-import asyncio  # <--- ЭТО НУЖНО ДОБАВИТЬ!
+import asyncio
 from datetime import datetime
 from telegram import (
     InlineKeyboardButton,
@@ -161,7 +161,7 @@ async def check_subscription(user_id, bot):
         return False
 
 def main_menu():
-    """Главное меню (кнопки в сообщениях)"""
+    """Главное меню (кнопки ВНУТРИ сообщений)"""
     keyboard = [
         [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
         [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
@@ -567,30 +567,34 @@ def main():
     # Создание приложения
     app = Application.builder().token(TOKEN).build()
 
-    # ===== ПОЛНОСТЬЮ УБИРАЕМ КНОПКУ МЕНЮ СПРАВА ВНИЗУ =====
-    # Создаём событийный цикл для асинхронных вызовов
-    loop = asyncio.get_event_loop()
+    # ===== УБИРАЕМ ТОЛЬКО КНОПКУ МЕНЮ СПРАВА ОТ ПОЛЯ ВВОДА =====
+    # Кнопки ВНУТРИ сообщений остаются!
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
     try:
-        # Убираем кнопку меню полностью
+        # Убираем кнопку меню справа от ввода (≡)
         loop.run_until_complete(app.bot.set_chat_menu_button(menu_button=None))
-        logger.info("✅ Кнопка меню (≡) полностью убрана")
+        logger.info("✅ Кнопка меню (≡) справа от ввода убрана")
         
-        # Убираем все команды из меню команд
-        loop.run_until_complete(app.bot.set_my_commands([]))
-        logger.info("✅ Список команд очищен")
+        # НЕ удаляем команды! Они нужны для работы бота
+        # loop.run_until_complete(app.bot.set_my_commands([]))  # ЭТО НЕ НУЖНО!
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка при настройке меню: {e}")
-    # НЕ ЗАКРЫВАЕМ ЦИКЛ!
+        logger.error(f"❌ Ошибка при настройке: {e}")
+    finally:
+        loop.close()
 
-    # Команды (только для админов)
+    # Команды (только /start для пользователей)
     app.add_handler(CommandHandler("start", start))
+    
+    # Админские команды
     if ADMIN_ID:
         app.add_handler(CommandHandler("stats", stats))
         app.add_handler(CommandHandler("test", test))
         app.add_handler(CommandHandler("diag", diagnose))
 
-    # Меню (кнопки в сообщениях - остаются!)
+    # ===== INLINE КНОПКИ В СООБЩЕНИЯХ - ОСТАВЛЯЕМ! =====
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
     app.add_handler(CallbackQueryHandler(buy_handler, pattern="^buy_"))
     app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
@@ -613,12 +617,14 @@ def main():
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"🚀 Запуск вебхука на порту {port}")
     
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TOKEN,
-        webhook_url=f"{RENDER_URL}/{TOKEN}",
-        allowed_updates=Update.ALL_TYPES
+    asyncio.run(
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=TOKEN,
+            webhook_url=f"{RENDER_URL}/{TOKEN}",
+            allowed_updates=Update.ALL_TYPES
+        )
     )
 
 if __name__ == "__main__":
