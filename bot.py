@@ -6,6 +6,7 @@ import signal
 import sys
 import gc
 import random
+import asyncio
 from datetime import datetime, timedelta
 from collections import defaultdict
 from telegram import (
@@ -26,7 +27,6 @@ from telegram.ext import (
 )
 from telegram.error import Forbidden, TimedOut, NetworkError
 import replicate
-from replicate import AsyncClient
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from aiohttp import web
@@ -114,8 +114,8 @@ logger.info(f"🐍 Python version: {platform.python_version()}")
 logger.info(f"🚀 Render URL: {RENDER_URL}")
 
 # ==================== ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ ====================
-# Используем асинхронный клиент
-replicate_client = AsyncClient(api_token=REPLICATE_API_TOKEN)
+# Используем синхронный клиент, но запускаем в отдельном потоке
+replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
 # ==================== НАСТРОЙКА БАЗЫ ДАННЫХ ====================
 DB_FILE = "bot.db"
@@ -266,7 +266,7 @@ def check_memory():
 
 # ==================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ====================
 async def generate_image(prompt: str, images: list = None):
-    """Генерация изображения через Replicate"""
+    """Генерация изображения через Replicate (запускаем в потоке)"""
     try:
         input_data = {"prompt": prompt}
         if images:
@@ -274,10 +274,14 @@ async def generate_image(prompt: str, images: list = None):
 
         logger.info(f"🎨 Отправка запроса в Replicate: {prompt[:50]}...")
         
-        # Используем асинхронный клиент
-        output = await replicate_client.run(
-            "google/nano-banana",
-            input=input_data,
+        # Запускаем синхронный вызов в отдельном потоке, чтобы не блокировать event loop
+        loop = asyncio.get_event_loop()
+        output = await loop.run_in_executor(
+            None,  # используем ThreadPoolExecutor по умолчанию
+            lambda: replicate_client.run(
+                "google/nano-banana",
+                input=input_data,
+            )
         )
 
         if output is None:
@@ -870,9 +874,6 @@ def main():
         running = False
         time.sleep(5)
         sys.exit(1)
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
