@@ -567,18 +567,22 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     # ===== ПОЛНОСТЬЮ УБИРАЕМ КНОПКУ МЕНЮ СПРАВА ВНИЗУ =====
-    async def setup_bot():
+    # Создаём событийный цикл для асинхронных вызовов
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
         # Убираем кнопку меню полностью
-        await app.bot.set_chat_menu_button(menu_button=None)
-        logger.info("✅ Кнопка меню полностью убрана")
+        loop.run_until_complete(app.bot.set_chat_menu_button(menu_button=None))
+        logger.info("✅ Кнопка меню (≡) полностью убрана")
         
         # Убираем все команды из меню команд
-        await app.bot.set_my_commands([])
+        loop.run_until_complete(app.bot.set_my_commands([]))
         logger.info("✅ Список команд очищен")
-
-    # Запускаем настройку
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(setup_bot())
+    except Exception as e:
+        logger.error(f"❌ Ошибка при настройке меню: {e}")
+    finally:
+        loop.close()
 
     # Команды (только для админов)
     app.add_handler(CommandHandler("start", start))
