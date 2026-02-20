@@ -15,6 +15,8 @@ from telegram import (
     Update,
     LabeledPrice,
     PreCheckoutQuery,
+    BotCommand,
+    BotCommandScopeDefault,
 )
 from telegram.ext import (
     Application,
@@ -26,7 +28,7 @@ from telegram.ext import (
     PreCheckoutQueryHandler,
 )
 from telegram.error import Forbidden, TimedOut, NetworkError
-import replicate  # Только так, без AsyncClient!
+import replicate
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from aiohttp import web
@@ -766,14 +768,16 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception(f"❌ Необработанная ошибка: {e}")
 
 # ==================== KEEP-ALIVE ====================
-def start_keep_alive(app):
-    """Запуск keep-alive с защитой"""
+def setup_web_app():
+    """Создание и настройка aiohttp приложения для health check"""
+    web_app = web.Application()
+    web_app.router.add_get('/health', health_check)
+    web_app.router.add_get('/', root_handler)
+    return web_app
+
+def start_keep_alive():
+    """Запуск keep-alive с защитой (отдельный планировщик)"""
     try:
-        # Принудительно инициализируем web_app и добавляем маршруты
-        web_app = app.web_app
-        web_app.router.add_get('/health', health_check)
-        web_app.router.add_get('/', root_handler)
-        
         scheduler = BackgroundScheduler()
         
         def ping():
@@ -814,14 +818,14 @@ def start_keep_alive(app):
         scheduler.add_job(ping, "interval", minutes=8, jitter=60)
         scheduler.start()
         
-        logger.info("✅ Keep-alive запущен с /health endpoint")
+        logger.info("✅ Keep-alive планировщик запущен")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска keep-alive: {e}")
+        logger.error(f"❌ Ошибка запуска keep-alive планировщика: {e}")
 
 # ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
-def main():
-    """Главная функция запуска бота"""
+async def main_async():
+    """Асинхронная главная функция"""
     global start_time, running
     start_time = time.time()
     
@@ -831,6 +835,13 @@ def main():
         
         # Создание приложения
         app = Application.builder().token(TOKEN).build()
+
+        # Удаляем все команды из меню (убираем кнопку "Меню" снизу)
+        try:
+            await app.bot.set_my_commands([], scope=BotCommandScopeDefault())
+            logger.info("✅ Команды бота очищены (меню снизу убрано)")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке команд: {e}")
 
         # Команды
         app.add_handler(CommandHandler("start", start))
@@ -854,19 +865,23 @@ def main():
         # Обработчик ошибок
         app.add_error_handler(error_handler)
 
-        # Keep-alive
-        start_keep_alive(app)
+        # Создаём отдельное aiohttp приложение для health check
+        web_app = setup_web_app()
         
-        # Запуск вебхука
+        # Запуск keep-alive планировщика
+        start_keep_alive()
+        
+        # Запуск вебхука с нашим aiohttp приложением
         port = int(os.environ.get("PORT", 10000))
         logger.info(f"🚀 Запуск вебхука на порту {port}")
         
-        app.run_webhook(
+        await app.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path=TOKEN,
             webhook_url=f"{RENDER_URL}/{TOKEN}",
-            allowed_updates=Update.ALL_TYPES
+            allowed_updates=Update.ALL_TYPES,
+            web_app=web_app  # передаём наше приложение
         )
         
     except Exception as e:
@@ -874,6 +889,10 @@ def main():
         running = False
         time.sleep(5)
         sys.exit(1)
+
+def main():
+    """Точка входа"""
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
