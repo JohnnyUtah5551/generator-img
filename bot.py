@@ -4,6 +4,7 @@ import sqlite3
 import time
 import signal
 import sys
+import asyncio  # <--- ЭТО НУЖНО ДОБАВИТЬ!
 from datetime import datetime
 from telegram import (
     InlineKeyboardButton,
