@@ -34,14 +34,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ==================== ОБРАБОТЧИКИ СИГНАЛОВ ====================
+running = True
+start_time = time.time()
+
+def signal_handler(sig, frame):
+    """Обработчик сигналов остановки"""
+    global running
+    logger.info("📴 Получен сигнал остановки, завершаем работу...")
+    running = False
+    time.sleep(2)
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 # ==================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RENDER_URL = os.getenv("RENDER_URL")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
-if not TOKEN or not RENDER_URL or not REPLICATE_API_TOKEN:
-    logger.error("❌ Не все переменные окружения установлены!")
+if not TOKEN:
+    logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
+    sys.exit(1)
+if not RENDER_URL:
+    logger.error("❌ RENDER_URL не установлен!")
+    sys.exit(1)
+if not REPLICATE_API_TOKEN:
+    logger.error("❌ REPLICATE_API_TOKEN не установлен!")
     sys.exit(1)
 
 logger.info(f"🐍 Python version: {platform.python_version()}")
@@ -54,8 +75,11 @@ replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 DB_FILE = "bot.db"
 
 def init_db():
+    """Инициализация базы данных"""
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
+    
+    # Таблица пользователей
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY,
@@ -63,6 +87,8 @@ def init_db():
             created_at TEXT
         )
     """)
+    
+    # Таблица транзакций
     cur.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,11 +99,13 @@ def init_db():
             created_at TEXT
         )
     """)
+    
     conn.commit()
     conn.close()
     logger.info("✅ База данных инициализирована")
 
 def get_user(user_id: int):
+    """Получение или создание пользователя"""
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("SELECT id, balance FROM users WHERE id=?", (user_id,))
@@ -98,10 +126,14 @@ def get_user(user_id: int):
     return balance
 
 def update_balance(user_id: int, delta: int, tx_type: str, payment_id: str = None):
+    """Обновление баланса пользователя"""
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
+    
+    # Обновляем баланс
     cur.execute("UPDATE users SET balance = balance + ? WHERE id=?", (delta, user_id))
     
+    # Записываем транзакцию
     if payment_id:
         cur.execute(
             "INSERT INTO transactions (user_id, type, amount, payment_id, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -116,9 +148,11 @@ def update_balance(user_id: int, delta: int, tx_type: str, payment_id: str = Non
     conn.commit()
     conn.close()
     logger.info(f"💰 Баланс обновлён: user={user_id}, delta={delta}, type={tx_type}")
+    return True
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 async def check_subscription(user_id, bot):
+    """Проверка подписки на канал"""
     try:
         member = await bot.get_chat_member(chat_id="@imaigenpromts", user_id=user_id)
         return member.status in ("member", "administrator", "creator")
@@ -126,6 +160,7 @@ async def check_subscription(user_id, bot):
         return False
 
 def main_menu():
+    """Главное меню (кнопки в сообщениях)"""
     keyboard = [
         [InlineKeyboardButton("🎨 Сгенерировать", callback_data="generate")],
         [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
@@ -134,20 +169,35 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== ГЕНЕРАЦИЯ ====================
+def get_restart_count():
+    """Получение количества перезапусков"""
+    try:
+        with open("/tmp/restart_count.txt", "r") as f:
+            return int(f.read().strip())
+    except:
+        return 0
+
+# ==================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ====================
 async def generate_image(prompt: str, images: list = None):
+    """Генерация изображения через Replicate"""
     try:
         input_data = {"prompt": prompt}
         if images:
             input_data["image_input"] = images
 
-        output = replicate_client.run("google/nano-banana", input=input_data)
+        logger.info(f"🎨 Отправка запроса в Replicate: {prompt[:50]}...")
+        
+        output = replicate_client.run(
+            "google/nano-banana",
+            input=input_data,
+        )
 
         if output:
             if isinstance(output, list) and len(output) > 0:
                 return output[0]
             return output
         return None
+        
     except Exception as e:
         error_msg = str(e).lower()
         logger.error(f"❌ Ошибка генерации: {error_msg}")
@@ -161,6 +211,7 @@ async def generate_image(prompt: str, images: list = None):
 
 # ==================== КОМАНДЫ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
     try:
         user_id = update.effective_user.id
         get_user(user_id)
@@ -172,20 +223,92 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text(text, reply_markup=main_menu())
+        logger.info(f"✅ /start от пользователя {user_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка в start: {e}")
 
-# ==================== ОБРАБОТЧИК КНОПОК ====================
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика для админа"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        
+        cur.execute("SELECT COUNT(*), SUM(balance) FROM users")
+        users_count, total_balance = cur.fetchone()
+        total_balance = total_balance or 0
+        
+        cur.execute("SELECT SUM(amount) FROM transactions WHERE type='buy'")
+        total_bought = cur.fetchone()[0] or 0
+        
+        cur.execute("SELECT SUM(amount) FROM transactions WHERE type='spend'")
+        total_spent = abs(cur.fetchone()[0] or 0)
+        
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE type='buy'")
+        purchases_count = cur.fetchone()[0] or 0
+        
+        conn.close()
+
+        uptime = time.time() - start_time
+
+        text = (
+            f"📊 **Статистика:**\n\n"
+            f"👥 Пользователей: {users_count}\n"
+            f"💰 Суммарный баланс: {total_balance}\n"
+            f"⭐ Куплено генераций: {total_bought}\n"
+            f"🛒 Покупок: {purchases_count}\n"
+            f"🎨 Израсходовано: {total_spent}\n\n"
+            f"⚙️ **Система:**\n"
+            f"⏱ Uptime: {uptime/3600:.1f} ч\n"
+            f"🔄 Перезапусков: {get_restart_count()}"
+        )
+        await update.message.reply_text(text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"❌ Ошибка в stats: {e}")
+
+async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Диагностика для админа"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    try:
+        uptime = time.time() - start_time
+        restart_count = get_restart_count()
+        
+        text = (
+            f"🔍 **Диагностика:**\n\n"
+            f"⏱ Uptime: {uptime:.0f} сек ({uptime/3600:.1f} ч)\n"
+            f"🔄 Перезапусков: {restart_count}\n"
+            f"🐍 Python: {platform.python_version()}\n"
+            f"📦 Render: {RENDER_URL}\n"
+            f"🆔 Admin: {ADMIN_ID}\n"
+            f"✅ Running: {running}"
+        )
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестовая команда для админа"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("✅ Бот работает!")
+
+# ==================== ОБРАБОТЧИКИ КНОПОК ====================
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на кнопки главного меню"""
     try:
         query = update.callback_query
         
-        # ВАЖНО: оборачиваем answer в try/except
+        # Пытаемся ответить на callback, игнорируем ошибки
         try:
             await query.answer()
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось ответить на callback: {e}")
-            # Продолжаем выполнение, даже если answer не удался
+        except:
+            pass
         
         user_id = query.from_user.id
         logger.info(f"🔘 Нажатие кнопки {query.data} от {user_id}")
@@ -193,6 +316,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data == "generate":
             balance = get_user(user_id)
 
+            # Админ всегда может генерировать
             if user_id != ADMIN_ID and balance > 0:
                 subscribed = await check_subscription(user_id, context.bot)
                 if not subscribed and not context.user_data.get("subscribed_once"):
@@ -227,46 +351,17 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             help_text = (
                 "ℹ️ **Помощь:**\n\n"
                 "1. Нажмите «Сгенерировать»\n"
-                "2. Отправьте текст или фото\n"
+                "2. Отправьте текст или фото с описанием\n"
                 "3. Получите изображение\n\n"
-                "💰 Покупка через Telegram Stars"
+                "💰 Покупка генераций через Telegram Stars"
             )
             await query.message.reply_text(help_text, parse_mode='Markdown', reply_markup=main_menu())
             
     except Exception as e:
         logger.error(f"❌ Ошибка в menu_handler: {e}")
 
-# ==================== ПОКУПКА ====================
-async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        try:
-            await query.answer()
-        except:
-            pass
-
-        packages = {
-            "buy_10": {"gens": 10, "stars": 40},
-            "buy_50": {"gens": 50, "stars": 200},
-            "buy_100": {"gens": 100, "stars": 400},
-        }
-
-        if query.data in packages:
-            pkg = packages[query.data]
-            
-            await query.message.reply_invoice(
-                title=f"Покупка {pkg['gens']} генераций",
-                description=f"Пополнение баланса",
-                payload=query.data,
-                provider_token="",
-                currency="XTR",
-                prices=[LabeledPrice(label=f"{pkg['gens']} генераций", amount=pkg['stars'])],
-            )
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка покупки: {e}")
-
 async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение подписки на канал"""
     try:
         query = update.callback_query
         try:
@@ -285,28 +380,90 @@ async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"❌ Ошибка подтверждения: {e}")
 
+async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик покупки генераций через Telegram Stars"""
+    try:
+        query = update.callback_query
+        try:
+            await query.answer()
+        except:
+            pass
+
+        packages = {
+            "buy_10": {"gens": 10, "stars": 40},
+            "buy_50": {"gens": 50, "stars": 200},
+            "buy_100": {"gens": 100, "stars": 400},
+        }
+
+        if query.data in packages:
+            pkg = packages[query.data]
+            
+            await query.message.reply_invoice(
+                title=f"Покупка {pkg['gens']} генераций",
+                description=f"Пополнение баланса для генерации изображений",
+                payload=query.data,
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(label=f"{pkg['gens']} генераций", amount=pkg['stars'])],
+                start_parameter=f"stars-payment-{pkg['gens']}"
+            )
+            logger.info(f"💰 Инвойс отправлен пользователю {query.from_user.id}: {pkg['gens']} ген за {pkg['stars']}⭐")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки инвойса: {e}")
+
+# ==================== ПЛАТЕЖИ ====================
 async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение предварительной проверки платежа"""
     query = update.pre_checkout_query
     await query.answer(ok=True)
 
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка успешного платежа"""
     try:
         payment = update.message.successful_payment
         user_id = update.effective_user.id
         payload = payment.invoice_payload
         payment_id = payment.telegram_payment_charge_id
 
-        gens_map = {"buy_10": 10, "buy_50": 50, "buy_100": 100}
+        logger.info(f"✅ Успешный платёж: user={user_id}, payload={payload}, id={payment_id}")
+
+        gens_map = {
+            "buy_10": 10,
+            "buy_50": 50,
+            "buy_100": 100,
+        }
         gens = gens_map.get(payload, 0)
         
-        if gens > 0:
-            update_balance(user_id, gens, "buy", payment_id)
-            await update.message.reply_text(f"✅ Добавлено {gens} генераций!", reply_markup=main_menu())
+        if gens <= 0:
+            await update.message.reply_text("⚠️ Ошибка: неизвестный пакет.")
+            return
+
+        # Проверяем, не было ли уже такой оплаты
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE payment_id=?", (payment_id,))
+        if cur.fetchone()[0] > 0:
+            conn.close()
+            logger.warning(f"Повторная оплата {payment_id}")
+            await update.message.reply_text("✅ Платёж уже был обработан.")
+            return
+        conn.close()
+
+        # Начисляем генерации
+        update_balance(user_id, gens, "buy", payment_id)
+
+        await update.message.reply_text(
+            f"✅ Оплата прошла успешно! На ваш баланс добавлено {gens} генераций.",
+            reply_markup=main_menu()
+        )
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки платежа: {e}")
+        logger.error(f"❌ Ошибка в successful_payment_handler: {e}")
 
 # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений и фото"""
     try:
         if not context.user_data.get("can_generate"):
             await update.message.reply_text("Главное меню:", reply_markup=main_menu())
@@ -317,21 +474,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_admin = user_id == ADMIN_ID
 
         if not is_admin and balance <= 0:
-            await update.message.reply_text("⚠️ Закончились генерации!", reply_markup=main_menu())
+            await update.message.reply_text("⚠️ У вас закончились генерации!", reply_markup=main_menu())
             return
 
         prompt = update.message.caption or update.message.text
         if not prompt:
-            await update.message.reply_text("📝 Добавьте описание.")
+            await update.message.reply_text("📝 Пожалуйста, добавьте описание для генерации.")
             return
 
-        await update.message.reply_text("⏳ Генерация...")
+        await update.message.reply_text("⏳ Генерация изображения...")
 
+        # Получаем фото, если есть
         images = []
         if update.message.photo:
-            file = await update.message.photo[-1].get_file()
-            images = [file.file_path]
+            try:
+                file = await update.message.photo[-1].get_file()
+                images = [file.file_path]
+            except Exception as e:
+                logger.error(f"Ошибка получения фото: {e}")
 
+        # Генерируем
         result = await generate_image(prompt, images if images else None)
 
         if isinstance(result, dict) and "error" in result:
@@ -339,25 +501,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["can_generate"] = False
             return
 
-        if result:
+        if not result:
+            await update.message.reply_text("❌ Генерация не дала результата.")
+            context.user_data["can_generate"] = False
+            return
+
+        # Отправляем результат
+        try:
             await update.message.reply_photo(result)
-            if not is_admin:
-                update_balance(user_id, -1, "spend")
+        except Exception as photo_error:
+            logger.error(f"Ошибка отправки фото: {photo_error}")
+            await update.message.reply_text("❌ Ошибка при отправке изображения.")
+            return
         
+        # Списание (только для не-админов)
+        if not is_admin:
+            update_balance(user_id, -1, "spend")
+            logger.info(f"📉 Списана 1 генерация у {user_id}")
+
         context.user_data["can_generate"] = False
-        await update.message.reply_text("✅ Готово! Нажмите /start для нового запроса.")
+        await update.message.reply_text("✅ Готово! Нажмите «Сгенерировать» для нового запроса.", reply_markup=main_menu())
             
     except Exception as e:
         logger.error(f"❌ Ошибка в handle_message: {e}")
 
+# ==================== ОБРАБОТЧИК ОШИБОК ====================
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный обработчик ошибок"""
+    try:
+        raise context.error
+    except Forbidden:
+        user_id = update.effective_user.id if update and update.effective_user else "неизвестно"
+        logger.warning(f"⚠️ Пользователь {user_id} заблокировал бота.")
+    except (TimedOut, NetworkError):
+        logger.warning("⚠️ Временная сетевая ошибка")
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
+
 # ==================== KEEP-ALIVE ====================
 def start_keep_alive():
+    """Запуск keep-alive для Render"""
     scheduler = BackgroundScheduler()
     
     def ping():
         try:
-            if RENDER_URL:
-                requests.get(f"{RENDER_URL}", timeout=10)
+            if RENDER_URL and running:
+                requests.get(f"{RENDER_URL}/", timeout=10)
         except:
             pass
 
@@ -367,14 +556,38 @@ def start_keep_alive():
 
 # ==================== ЗАПУСК ====================
 def main():
+    """Главная функция запуска"""
+    global start_time
+    start_time = time.time()
+    
+    # Инициализация БД
     init_db()
     
+    # Создание приложения
     app = Application.builder().token(TOKEN).build()
 
-    # Команды
-    app.add_handler(CommandHandler("start", start))
+    # ===== ПОЛНОСТЬЮ УБИРАЕМ КНОПКУ МЕНЮ СПРАВА ВНИЗУ =====
+    async def setup_bot():
+        # Убираем кнопку меню полностью
+        await app.bot.set_chat_menu_button(menu_button=None)
+        logger.info("✅ Кнопка меню полностью убрана")
+        
+        # Убираем все команды из меню команд
+        await app.bot.set_my_commands([])
+        logger.info("✅ Список команд очищен")
 
-    # Меню
+    # Запускаем настройку
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(setup_bot())
+
+    # Команды (только для админов)
+    app.add_handler(CommandHandler("start", start))
+    if ADMIN_ID:
+        app.add_handler(CommandHandler("stats", stats))
+        app.add_handler(CommandHandler("test", test))
+        app.add_handler(CommandHandler("diag", diagnose))
+
+    # Меню (кнопки в сообщениях - остаются!)
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
     app.add_handler(CallbackQueryHandler(buy_handler, pattern="^buy_"))
     app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
@@ -387,16 +600,22 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
+    # Обработчик ошибок
+    app.add_error_handler(error_handler)
+
     # Keep-alive
     start_keep_alive()
     
-    # Запуск
+    # Запуск вебхука
     port = int(os.environ.get("PORT", 10000))
+    logger.info(f"🚀 Запуск вебхука на порту {port}")
+    
     app.run_webhook(
         listen="0.0.0.0",
         port=port,
         url_path=TOKEN,
-        webhook_url=f"{RENDER_URL}/{TOKEN}"
+        webhook_url=f"{RENDER_URL}/{TOKEN}",
+        allowed_updates=Update.ALL_TYPES
     )
 
 if __name__ == "__main__":
