@@ -569,8 +569,7 @@ def main():
 
     # ===== ПОЛНОСТЬЮ УБИРАЕМ КНОПКУ МЕНЮ СПРАВА ВНИЗУ =====
     # Создаём событийный цикл для асинхронных вызовов
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.get_event_loop()
     
     try:
         # Убираем кнопку меню полностью
@@ -582,8 +581,7 @@ def main():
         logger.info("✅ Список команд очищен")
     except Exception as e:
         logger.error(f"❌ Ошибка при настройке меню: {e}")
-    finally:
-        loop.close()
+    # НЕ ЗАКРЫВАЕМ ЦИКЛ!
 
     # Команды (только для админов)
     app.add_handler(CommandHandler("start", start))
