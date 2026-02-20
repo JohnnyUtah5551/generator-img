@@ -6,7 +6,8 @@ import signal
 import sys
 import gc
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
+from collections import defaultdict
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -25,6 +26,7 @@ from telegram.ext import (
 )
 from telegram.error import Forbidden, TimedOut, NetworkError
 import replicate
+from replicate import AsyncClient
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from aiohttp import web
@@ -41,6 +43,29 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# ==================== ЗАЩИТА ОТ ФЛУДА ОШИБКАМИ ====================
+error_counters = defaultdict(list)
+MAX_ERRORS_PER_MINUTE = 5
+
+def check_error_rate(user_id: int) -> bool:
+    """Проверка частоты ошибок для пользователя"""
+    now = datetime.now()
+    # Очищаем старые ошибки (старше 1 минуты)
+    error_counters[user_id] = [
+        t for t in error_counters[user_id] 
+        if now - t < timedelta(minutes=1)
+    ]
+    
+    # Если слишком много ошибок за минуту
+    if len(error_counters[user_id]) >= MAX_ERRORS_PER_MINUTE:
+        return False
+    
+    return True
+
+def add_error(user_id: int):
+    """Добавляем ошибку в счётчик"""
+    error_counters[user_id].append(datetime.now())
 
 # ==================== ОБРАБОТЧИКИ СИГНАЛОВ ====================
 running = True
@@ -89,7 +114,8 @@ logger.info(f"🐍 Python version: {platform.python_version()}")
 logger.info(f"🚀 Render URL: {RENDER_URL}")
 
 # ==================== ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ ====================
-replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+# Используем асинхронный клиент
+replicate_client = AsyncClient(api_token=REPLICATE_API_TOKEN)
 
 # ==================== НАСТРОЙКА БАЗЫ ДАННЫХ ====================
 DB_FILE = "bot.db"
@@ -248,28 +274,60 @@ async def generate_image(prompt: str, images: list = None):
 
         logger.info(f"🎨 Отправка запроса в Replicate: {prompt[:50]}...")
         
-        output = replicate_client.run(
+        # Используем асинхронный клиент
+        output = await replicate_client.run(
             "google/nano-banana",
             input=input_data,
         )
 
-        if output:
-            if isinstance(output, list) and len(output) > 0:
-                return output[0]
-            return output
-        
-        return None
+        if output is None:
+            return {
+                "error": "❌ Модель не вернула результат. Попробуйте позже.",
+                "type": "no_result"
+            }
+            
+        if isinstance(output, list) and len(output) > 0:
+            return output[0]
+        return output
         
     except Exception as e:
-        error_msg = str(e)
+        error_msg = str(e).lower()
         logger.error(f"❌ Ошибка генерации: {error_msg}")
         
-        if "insufficient credit" in error_msg.lower():
-            return {"error": "Недостаточно генераций. Пополните баланс."}
-        elif "flagged as sensitive" in error_msg.lower():
-            return {"error": "Запрос отклонён системой модерации. Попробуйте изменить формулировку."}
+        # Разные типы ошибок с понятными сообщениями
+        if "insufficient credit" in error_msg:
+            return {
+                "error": "⚠️ Недостаточно средств на аккаунте Replicate. Свяжитесь с администратором.",
+                "type": "credit"
+            }
+        elif "flagged as sensitive" in error_msg:
+            return {
+                "error": "🚫 Запрос отклонён цензурой.\n\n"
+                        "Пожалуйста, измените формулировку запроса и попробуйте снова.\n"
+                        "Избегайте сцен насилия, откровенных изображений и запрещённого контента.",
+                "type": "moderation"
+            }
+        elif "rate limit" in error_msg:
+            return {
+                "error": "⏳ Слишком много запросов. Подождите минуту и попробуйте снова.",
+                "type": "rate_limit"
+            }
+        elif "timeout" in error_msg or "timed out" in error_msg:
+            return {
+                "error": "⌛ Генерация заняла слишком много времени. Попробуйте ещё раз.",
+                "type": "timeout"
+            }
+        elif "model not found" in error_msg:
+            return {
+                "error": "🔧 Модель временно недоступна. Попробуйте позже.",
+                "type": "model_error"
+            }
         else:
-            return {"error": "Извините, генерация временно недоступна."}
+            return {
+                "error": "❌ Извините, произошла ошибка при генерации. Попробуйте позже.",
+                "type": "unknown",
+                "details": str(e)
+            }
 
 # ==================== HEALTH CHECK ====================
 async def health_check(request):
@@ -317,7 +375,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=main_menu())
         logger.info(f"✅ /start от пользователя {user_id}")
     except Exception as e:
-        logger.error(f"❌ Ошибка в start: {e}")
+        logger.exception(f"❌ Ошибка в start: {e}")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика для админа"""
@@ -361,7 +419,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"❌ Ошибка в stats: {e}")
+        logger.exception(f"❌ Ошибка в stats: {e}")
 
 async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Диагностика проблем"""
@@ -382,7 +440,8 @@ async def diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🐍 Python: {platform.python_version()}\n"
             f"📦 Render: {RENDER_URL}\n"
             f"🆔 Admin: {ADMIN_ID}\n"
-            f"✅ Running: {running}"
+            f"✅ Running: {running}\n"
+            f"📊 Ошибок в минуту: {sum(len(v) for v in error_counters.values())}"
         )
         
         await update.message.reply_text(text, parse_mode='Markdown')
@@ -438,7 +497,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 "Создавайте изображение!\nОтправьте текст или одно фото с подписью."
             )
-            await query.message.delete()
+            # Пробуем удалить сообщение, игнорируем ошибку
+            try:
+                await query.message.delete()
+            except:
+                pass
 
         # Баланс
         elif query.data == "balance":
@@ -473,7 +536,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(help_text, parse_mode='Markdown', reply_markup=main_menu())
             
     except Exception as e:
-        logger.error(f"❌ Ошибка в menu_handler: {e}")
+        logger.exception(f"❌ Ошибка в menu_handler: {e}")
 
 async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подтверждение подписки на канал"""
@@ -495,7 +558,7 @@ async def confirm_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "❌ Вы ещё не подписались!\nПожалуйста, подпишитесь на канал:\n@imaigenpromts"
             )
     except Exception as e:
-        logger.error(f"❌ Ошибка в confirm_sub_handler: {e}")
+        logger.exception(f"❌ Ошибка в confirm_sub_handler: {e}")
 
 async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик покупки генераций через Telegram Stars"""
@@ -527,18 +590,11 @@ async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"💰 Инвойс отправлен пользователю {query.from_user.id}: {pkg['gens']} ген за {pkg['stars']}⭐")
             
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки инвойса: {e}")
+        logger.exception(f"❌ Ошибка отправки инвойса: {e}")
         await query.message.reply_text(
             "❌ Ошибка при создании платежа. Пожалуйста, попробуйте позже.",
             reply_markup=main_menu()
         )
-
-async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Завершение сессии генерации"""
-    context.user_data["can_generate"] = False
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("Главное меню:", reply_markup=main_menu())
 
 # ==================== ПЛАТЕЖИ ====================
 async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -588,17 +644,26 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         )
         
     except Exception as e:
-        logger.error(f"❌ Ошибка в successful_payment_handler: {e}")
+        logger.exception(f"❌ Ошибка в successful_payment_handler: {e}")
 
 # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка текстовых сообщений и фото"""
     try:
+        user_id = update.effective_user.id
+        
+        # Проверка на флуд ошибками
+        if not check_error_rate(user_id):
+            logger.warning(f"⚠️ Слишком много ошибок от пользователя {user_id}, пропускаем")
+            await update.message.reply_text(
+                "⚠️ Обнаружено слишком много ошибок. Подождите минуту и попробуйте снова."
+            )
+            return
+            
         if not context.user_data.get("can_generate"):
             await update.message.reply_text("Главное меню:", reply_markup=main_menu())
             return
 
-        user_id = update.effective_user.id
         balance = get_user(user_id)
         is_admin = user_id == ADMIN_ID
 
@@ -613,7 +678,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt = update.message.caption or update.message.text
         if not prompt:
             await update.message.reply_text(
-                "Пожалуйста, добавьте описание для генерации."
+                "📝 Пожалуйста, добавьте описание для генерации."
             )
             return
 
@@ -626,37 +691,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Получаем фото, если есть
         images = []
         if update.message.photo:
-            file = await update.message.photo[-1].get_file()
-            images = [file.file_path]
+            try:
+                file = await update.message.photo[-1].get_file()
+                images = [file.file_path]
+            except Exception as e:
+                logger.error(f"Ошибка получения фото: {e}")
+                await update.message.reply_text("❌ Ошибка при загрузке фото.")
+                return
 
         # Генерируем
         result = await generate_image(prompt, images if images else None)
 
-        if not result or (isinstance(result, dict) and "error" in result):
-            error_text = result["error"] if isinstance(result, dict) and "error" in result else \
-                "⚠️ Генерация временно недоступна. Попробуйте позже."
-            await update.message.reply_text(error_text)
-        else:
-            await update.message.reply_photo(result)
-            
-            # Списание (только для не-админов)
-            if not is_admin:
-                update_balance(user_id, -1, "spend")
-                logger.info(f"📉 Списана 1 генерация у {user_id}")
+        if isinstance(result, dict) and "error" in result:
+            # Показываем пользователю понятное сообщение об ошибке
+            await update.message.reply_text(result["error"])
+            add_error(user_id)  # Добавляем ошибку в счётчик
+            context.user_data["can_generate"] = False
+            return
 
-            keyboard = [
-                [
-                    InlineKeyboardButton("🔄 Повторить", callback_data="generate"),
-                    InlineKeyboardButton("✅ Завершить", callback_data="end"),
-                ]
-            ]
-            await update.message.reply_text(
-                "Напишите в чат, если нужно изменить что-то ещё.",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
+        if not result:
+            await update.message.reply_text("❌ Генерация не дала результата. Попробуйте позже.")
+            add_error(user_id)
+            context.user_data["can_generate"] = False
+            return
+
+        # Отправляем результат
+        try:
+            await update.message.reply_photo(result)
+        except Exception as photo_error:
+            logger.error(f"Ошибка отправки фото: {photo_error}")
+            await update.message.reply_text("❌ Ошибка при отправке изображения.")
+            add_error(user_id)
+            return
+        
+        # Списание (только для не-админов)
+        if not is_admin:
+            update_balance(user_id, -1, "spend")
+            logger.info(f"📉 Списана 1 генерация у {user_id}")
+
+        # Простое сообщение без кнопок для продолжения
+        await update.message.reply_text(
+            "✅ Готово! Чтобы сгенерировать ещё раз, нажмите /start и выберите «Сгенерировать»."
+        )
+        
+        # Сбрасываем флаг генерации
+        context.user_data["can_generate"] = False
             
     except Exception as e:
-        logger.error(f"❌ Ошибка в handle_message: {e}")
+        logger.exception(f"❌ Ошибка в handle_message: {e}")
+        add_error(update.effective_user.id if update.effective_user else 0)
+        # Отправляем сообщение об ошибке пользователю
+        try:
+            await update.message.reply_text(
+                "❌ Произошла внутренняя ошибка. Пожалуйста, попробуйте позже."
+            )
+        except:
+            pass
 
 # ==================== ОБРАБОТЧИК ОШИБОК ====================
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -669,12 +759,17 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (TimedOut, NetworkError):
         logger.warning("⚠️ Временная сетевая ошибка")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}", exc_info=True)
+        logger.exception(f"❌ Необработанная ошибка: {e}")
 
 # ==================== KEEP-ALIVE ====================
 def start_keep_alive(app):
     """Запуск keep-alive с защитой"""
     try:
+        # Принудительно инициализируем web_app и добавляем маршруты
+        web_app = app.web_app
+        web_app.router.add_get('/health', health_check)
+        web_app.router.add_get('/', root_handler)
+        
         scheduler = BackgroundScheduler()
         
         def ping():
@@ -685,23 +780,37 @@ def start_keep_alive(app):
                 # Проверяем память
                 memory = check_memory()
                 
-                # Стучимся на health-check
+                # Стучимся на health-check с увеличенным таймаутом
                 if RENDER_URL:
-                    r = requests.get(f"{RENDER_URL}/health", timeout=10)
-                    logger.info(f"📡 Keep-alive: {r.status_code}, память: {memory:.1f}%")
+                    base_url = RENDER_URL.rstrip('/')
                     
+                    # Пробуем до 3 раз с увеличивающимся таймаутом
+                    for attempt in range(3):
+                        try:
+                            timeout = 15 + (attempt * 5)  # 15, 20, 25 сек
+                            r = requests.get(f"{base_url}/health", timeout=timeout)
+                            if r.status_code == 200:
+                                logger.info(f"📡 Keep-alive OK: {r.status_code}, память: {memory:.1f}%")
+                                break
+                            else:
+                                logger.warning(f"⚠️ Keep-alive статус {r.status_code}, попытка {attempt+1}")
+                        except requests.Timeout:
+                            if attempt == 2:  # Последняя попытка
+                                logger.error(f"❌ Keep-alive timeout после {attempt+1} попыток")
+                            else:
+                                logger.warning(f"⏱ Keep-alive timeout (попытка {attempt+1}), повтор...")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Keep-alive error (попытка {attempt+1}): {e}")
+                            break  # Другие ошибки не ретраим
+                            
             except Exception as e:
                 logger.warning(f"⚠️ Keep-alive error: {e}")
 
-        # Добавляем задачу со случайной задержкой
-        scheduler.add_job(ping, "interval", minutes=10, jitter=60)
+        # Добавляем задачу каждые 8 минут (чаще, чем 10)
+        scheduler.add_job(ping, "interval", minutes=8, jitter=60)
         scheduler.start()
         
-        # Добавляем health check endpoints
-        app.web_app.router.add_get('/health', health_check)
-        app.web_app.router.add_get('/', root_handler)
-        
-        logger.info("✅ Keep-alive запущен")
+        logger.info("✅ Keep-alive запущен с /health endpoint")
         
     except Exception as e:
         logger.error(f"❌ Ошибка запуска keep-alive: {e}")
@@ -728,7 +837,6 @@ def main():
         # Меню
         app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
         app.add_handler(CallbackQueryHandler(buy_handler, pattern="^(buy_10|buy_50|buy_100)$"))
-        app.add_handler(CallbackQueryHandler(end_handler, pattern="^end$"))
         app.add_handler(CallbackQueryHandler(confirm_sub_handler, pattern="^confirm_sub$"))
 
         # Оплата
@@ -762,6 +870,9 @@ def main():
         running = False
         time.sleep(5)
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
