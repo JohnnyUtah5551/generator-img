@@ -26,7 +26,7 @@ from telegram.ext import (
     PreCheckoutQueryHandler,
 )
 from telegram.error import Forbidden, TimedOut, NetworkError
-import replicate
+import replicate  # Только так, без AsyncClient!
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from aiohttp import web
@@ -114,7 +114,7 @@ logger.info(f"🐍 Python version: {platform.python_version()}")
 logger.info(f"🚀 Render URL: {RENDER_URL}")
 
 # ==================== ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ ====================
-# Используем синхронный клиент, но запускаем в отдельном потоке
+# Используем синхронный клиент
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
 # ==================== НАСТРОЙКА БАЗЫ ДАННЫХ ====================
@@ -274,7 +274,7 @@ async def generate_image(prompt: str, images: list = None):
 
         logger.info(f"🎨 Отправка запроса в Replicate: {prompt[:50]}...")
         
-        # Запускаем синхронный вызов в отдельном потоке, чтобы не блокировать event loop
+        # Запускаем синхронный вызов в отдельном потоке
         loop = asyncio.get_event_loop()
         output = await loop.run_in_executor(
             None,  # используем ThreadPoolExecutor по умолчанию
@@ -709,7 +709,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if isinstance(result, dict) and "error" in result:
             # Показываем пользователю понятное сообщение об ошибке
             await update.message.reply_text(result["error"])
-            add_error(user_id)  # Добавляем ошибку в счётчик
+            add_error(user_id)
             context.user_data["can_generate"] = False
             return
 
