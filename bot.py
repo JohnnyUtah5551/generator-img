@@ -564,26 +564,29 @@ def main():
     # Инициализация БД
     init_db()
     
+    # Создаём событийный цикл и устанавливаем его
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     # Создание приложения
     app = Application.builder().token(TOKEN).build()
 
     # ===== УБИРАЕМ ТОЛЬКО КНОПКУ МЕНЮ СПРАВА ОТ ПОЛЯ ВВОДА =====
     # Кнопки ВНУТРИ сообщений остаются!
     
-    # Асинхронная функция для настройки
-    async def setup_bot():
-        try:
-            # Убираем кнопку меню справа от ввода (≡)
-            await app.bot.set_chat_menu_button(menu_button=None)
-            logger.info("✅ Кнопка меню (≡) справа от ввода убрана")
-            
-            # НЕ удаляем команды! Они нужны для работы бота
-            # await app.bot.set_my_commands([])  # ЭТО НЕ НУЖНО!
-        except Exception as e:
-            logger.error(f"❌ Ошибка при настройке: {e}")
+    try:
+        # Убираем кнопку меню справа от ввода (≡)
+        loop.run_until_complete(app.bot.set_chat_menu_button(menu_button=None))
+        logger.info("✅ Кнопка меню (≡) справа от ввода убрана")
+        
+        # НЕ удаляем команды! Они нужны для работы бота
+        # loop.run_until_complete(app.bot.set_my_commands([]))  # ЭТО НЕ НУЖНО!
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при настройке: {e}")
     
-    # Запускаем настройку
-    asyncio.run(setup_bot())
+    # НЕ ЗАКРЫВАЕМ ЦИКЛ! Он нужен для работы вебхука
+    # loop.close()  # НЕ ЗАКРЫВАЕМ!
 
     # Команды (только /start для пользователей)
     app.add_handler(CommandHandler("start", start))
@@ -613,16 +616,19 @@ def main():
     # Keep-alive
     start_keep_alive()
     
-    # Запуск вебхука (без asyncio.run)
+    # Запуск вебхука - используем наш цикл
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"🚀 Запуск вебхука на порту {port}")
     
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TOKEN,
-        webhook_url=f"{RENDER_URL}/{TOKEN}",
-        allowed_updates=Update.ALL_TYPES
+    # Запускаем вебхук с нашим циклом
+    loop.run_until_complete(
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=TOKEN,
+            webhook_url=f"{RENDER_URL}/{TOKEN}",
+            allowed_updates=Update.ALL_TYPES
+        )
     )
 
 if __name__ == "__main__":
