@@ -15,7 +15,6 @@ from telegram import (
     Update,
     LabeledPrice,
     PreCheckoutQuery,
-    BotCommand,
     BotCommandScopeDefault,
 )
 from telegram.ext import (
@@ -26,6 +25,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
     PreCheckoutQueryHandler,
+    WebhookServer,
 )
 from telegram.error import Forbidden, TimedOut, NetworkError
 import replicate
@@ -768,13 +768,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception(f"❌ Необработанная ошибка: {e}")
 
 # ==================== KEEP-ALIVE ====================
-def setup_web_app():
-    """Создание и настройка aiohttp приложения для health check"""
-    web_app = web.Application()
-    web_app.router.add_get('/health', health_check)
-    web_app.router.add_get('/', root_handler)
-    return web_app
-
 def start_keep_alive():
     """Запуск keep-alive с защитой (отдельный планировщик)"""
     try:
@@ -833,13 +826,21 @@ async def main_async():
         # Инициализация БД
         init_db()
         
-        # Создание приложения
-        app = Application.builder().token(TOKEN).build()
+        # Создаём своё aiohttp приложение для всех HTTP запросов
+        web_app = web.Application()
+        web_app.router.add_get('/health', health_check)
+        web_app.router.add_get('/', root_handler)
+        
+        # Создаём WebhookServer с нашим приложением
+        server = WebhookServer(web_app, f"/{TOKEN}")
+        
+        # Создаём Application с этим сервером
+        app = Application.builder().token(TOKEN).webhook_server(server).build()
 
         # Удаляем все команды из меню (убираем кнопку "Меню" снизу)
         try:
             await app.bot.set_my_commands([], scope=BotCommandScopeDefault())
-            logger.info("✅ Команды бота очищены (меню снизу убрано)")
+            logger.info("✅ Команды бота очищены")
         except Exception as e:
             logger.error(f"❌ Ошибка при очистке команд: {e}")
 
@@ -865,23 +866,18 @@ async def main_async():
         # Обработчик ошибок
         app.add_error_handler(error_handler)
 
-        # Создаём отдельное aiohttp приложение для health check
-        web_app = setup_web_app()
-        
         # Запуск keep-alive планировщика
         start_keep_alive()
         
-        # Запуск вебхука с нашим aiohttp приложением
+        # Запуск вебхука
         port = int(os.environ.get("PORT", 10000))
-        logger.info(f"🚀 Запуск вебхука на порту {port}")
+        logger.info(f"🚀 Запуск вебхука на порту {port} с health check")
         
         await app.run_webhook(
             listen="0.0.0.0",
             port=port,
-            url_path=TOKEN,
             webhook_url=f"{RENDER_URL}/{TOKEN}",
-            allowed_updates=Update.ALL_TYPES,
-            web_app=web_app  # передаём наше приложение
+            allowed_updates=Update.ALL_TYPES
         )
         
     except Exception as e:
