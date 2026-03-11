@@ -187,11 +187,19 @@ async def generate_image(prompt: str, images: list = None):
             input_data["image_input"] = images
 
         logger.info(f"🎨 Отправка запроса в Replicate: {prompt[:50]}...")
+        logger.info(f"📦 Входные данные: {input_data}")
+        
+        # Добавим замер времени
+        start_time = time.time()
         
         output = replicate_client.run(
             "google/nano-banana",
             input=input_data,
         )
+        
+        elapsed = time.time() - start_time
+        logger.info(f"✅ Генерация завершена за {elapsed:.2f}с")
+        logger.info(f"📤 Результат: {output}")
 
         if output:
             if isinstance(output, list) and len(output) > 0:
@@ -201,7 +209,7 @@ async def generate_image(prompt: str, images: list = None):
         
     except Exception as e:
         error_msg = str(e).lower()
-        logger.error(f"❌ Ошибка генерации: {error_msg}")
+        logger.error(f"❌ Ошибка генерации: {error_msg}", exc_info=True)
         
         if "insufficient credit" in error_msg:
             return {"error": "⚠️ Недостаточно средств на аккаунте Replicate."}
@@ -209,6 +217,31 @@ async def generate_image(prompt: str, images: list = None):
             return {"error": "🚫 Запрос отклонён цензурой. Измените формулировку."}
         else:
             return {"error": "❌ Ошибка при генерации. Попробуйте позже."}
+
+async def generate_image_with_retry(prompt: str, images: list = None, max_retries: int = 3):
+    """Генерация изображения с повторными попытками"""
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔄 Попытка {attempt + 1}/{max_retries}")
+            result = await generate_image(prompt, images)
+            
+            if result and not (isinstance(result, dict) and "error" in result):
+                return result
+            
+            # Если это не ошибка 502, возвращаем сразу
+            if isinstance(result, dict) and "error" in result:
+                if "502" not in result["error"].lower() and "bad gateway" not in result["error"].lower():
+                    return result
+                    
+        except Exception as e:
+            logger.error(f"❌ Попытка {attempt + 1}/{max_retries} не удалась: {e}")
+        
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt  # 1, 2, 4 секунды
+            logger.info(f"⏳ Повторная попытка через {wait_time}с...")
+            await asyncio.sleep(wait_time)
+    
+    return {"error": "❌ Не удалось сгенерировать после нескольких попыток. Сервис временно недоступен."}
 
 # ==================== КОМАНДЫ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -298,6 +331,35 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     await update.message.reply_text("✅ Бот работает!")
+
+async def check_replicate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка статуса Replicate"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    try:
+        # Проверяем доступность API
+        start = time.time()
+        replicate_client.models.get("google/nano-banana")
+        latency = time.time() - start
+        
+        # Проверяем баланс аккаунта
+        account_info = "Информация о балансе недоступна через API"
+        
+        await update.message.reply_text(
+            f"✅ **Replicate API статус:**\n\n"
+            f"📊 Модель google/nano-banana доступна\n"
+            f"⏱ Задержка: {latency:.2f}с\n"
+            f"🔑 Токен: {'✅ установлен' if REPLICATE_API_TOKEN else '❌ не установлен'}\n"
+            f"🔗 API URL: https://api.replicate.com\n\n"
+            f"{account_info}",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ **Ошибка Replicate:**\n```\n{str(e)[:200]}\n```",
+            parse_mode='Markdown'
+        )
 
 # ==================== ОБРАБОТЧИКИ КНОПОК ====================
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,8 +556,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Ошибка получения фото: {e}")
 
-        # Генерируем
-        result = await generate_image(prompt, images if images else None)
+        # Генерируем с повторными попытками
+        result = await generate_image_with_retry(prompt, images if images else None)
 
         if isinstance(result, dict) and "error" in result:
             await update.message.reply_text(result["error"])
@@ -564,6 +626,15 @@ def main():
     # Инициализация БД
     init_db()
     
+    # Проверка API ключа Replicate
+    try:
+        # Простой тестовый запрос для проверки ключа
+        replicate_client.models.get("google/nano-banana")
+        logger.info("✅ Replicate API ключ работает, модель доступна")
+    except Exception as e:
+        logger.error(f"❌ Ошибка подключения к Replicate: {e}")
+        logger.error("Проверьте REPLICATE_API_TOKEN и доступность модели")
+    
     # Создаём событийный цикл и устанавливаем его
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -596,6 +667,7 @@ def main():
         app.add_handler(CommandHandler("stats", stats))
         app.add_handler(CommandHandler("test", test))
         app.add_handler(CommandHandler("diag", diagnose))
+        app.add_handler(CommandHandler("check_replicate", check_replicate))
 
     # ===== INLINE КНОПКИ В СООБЩЕНИЯХ - ОСТАВЛЯЕМ! =====
     app.add_handler(CallbackQueryHandler(menu_handler, pattern="^(generate|balance|buy|help)$"))
